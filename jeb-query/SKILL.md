@@ -8,12 +8,12 @@ description: Query step for J.E.B. — hunt for vulnerabilities and analyze Burp
 This skill queries a ChromaDB that was populated by the **`jeb-import`** skill. If the
 database does not exist yet, run `jeb-import` first.
 
-Queries use the agent interface script and the shared venv that live in the
-`jeb-import` skill folder:
+Queries use this skill's `agent_interface.py` script, run with the shared venv that
+was created by (and lives in) the `jeb-import` skill folder:
 
 ```
 PY=~/.config/opencode/skill/jeb-import/scripts/venv/bin/python
-AGENT=~/.config/opencode/skill/jeb-import/scripts/agent_interface.py
+AGENT=~/.config/opencode/skill/jeb-query/scripts/agent_interface.py
 ```
 
 **Always query the database belonging to the project you are working on.** Run these
@@ -34,7 +34,7 @@ ChromaDB metadata filters via `--where`.
 
 ```bash
 ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-import/scripts/agent_interface.py \
+  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
   --db-path ./chroma_db \
   --query "<semantic search query>" --where '{"method": "POST", "auth_role": "admin"}'
 ```
@@ -50,7 +50,7 @@ info disclosure):
 
 ```bash
 ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-import/scripts/agent_interface.py \
+  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
   --db-path ./chroma_db \
   --query "server error stack trace" \
   --where '{"$and": [{"status_code": {"$gte": 500}}, {"resp_len": {"$gte": 5000}}]}'
@@ -95,7 +95,7 @@ This is where DOM XSS sinks, hardcoded secrets, and hidden/undocumented endpoint
 
 ```bash
 ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-import/scripts/agent_interface.py \
+  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
   --db-path ./chroma_db --collection web_code \
   --query "authentication token handling" --where '{"has_secrets": true}'
 ```
@@ -126,12 +126,12 @@ and fetch the complete headers and raw body (traffic) or full code chunk (`web_c
 ```bash
 # Traffic request/response
 ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-import/scripts/agent_interface.py \
+  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
   --db-path ./chroma_db --id <document_id>
 
 # Full web_code chunk (use the matching collection)
 ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-import/scripts/agent_interface.py \
+  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
   --db-path ./chroma_db --collection web_code --id <document_id>
 ```
 
