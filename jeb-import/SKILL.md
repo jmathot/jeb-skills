@@ -63,7 +63,13 @@ The database holds **two collections**, each with its own metadata schema:
 
 ## Notes
 
+- Embeddings use embeddinggemma's **asymmetric prompts**: the whole corpus is
+  embedded with the document prompt (via the shared `scripts/embedding.py` helper),
+  and each collection is stamped with an `embedding_scheme` so `jeb-query` embeds
+  queries with the matching prompt. This improves retrieval relevance automatically.
 - Re-running the pipeline against the same `project_dir` upserts into the existing
-  `chroma_db/`; already-embedded documents are skipped by id.
+  `chroma_db/`; already-embedded documents are skipped by id. To **upgrade an older
+  database** built before the prefixed embedding scheme, re-import into a **fresh**
+  `chroma_db` directory (skipped ids would otherwise keep their old vectors).
 - If Step 5 reports 0 documents in `web_code`, confirm Ollama is running and the
   `embeddinggemma:latest` model is pulled (`ollama pull embeddinggemma:latest`).

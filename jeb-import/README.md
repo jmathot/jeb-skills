@@ -35,6 +35,7 @@ The framework consists of a robust pipeline that processes raw Burp traffic into
 
 ### Phase 3: Vector Storage (`vector_store.py`)
 - **Purpose**: Embeds the structured documents using a local Ollama embedding model (`embeddinggemma:latest`). Leverages ChromaDB to allow both semantic search and metadata filtering. Serializes metadata arrays into strings. Includes retry/backoff on transient embedding failures.
+- **Asymmetric prompts**: Embedding uses embeddinggemma's paired task prompts via the shared `embedding.py` helper — the corpus is embedded with the document prompt (`title: none | text: …`), and each collection is stamped with an `embedding_scheme` so the query side can apply the matching query prompt (`search result` for traffic, `code retrieval` for `web_code`). This improves retrieval relevance.
 - **Two collections**: traffic is embedded into `burp_traffic`; web-app code into `web_code` (via `--collection`). Store-only chunks (`embed: false`) are persisted with a fixed placeholder vector so they remain fetchable by id without polluting search.
 - **Per-project isolation**: The ChromaDB is always co-located with the project's chunks file (or an explicit `--db-path`), so **each project keeps its own database** and traffic from separate projects is never mixed.
 
@@ -43,7 +44,8 @@ The framework consists of a robust pipeline that processes raw Burp traffic into
   in the `jeb-query` skill (`jeb-query/scripts/agent_interface.py`) but is run with
   this skill's shared venv python.
 - **Functions**: 
-  - `search_traffic_summary()`: Search by semantic query, returning lightweight summaries. Auto-detects `web_code` vs traffic documents and shapes the summary accordingly (surfacing `code_type`, `has_secrets`, `dom_sinks`, `endpoints`). Select the collection with `--collection {burp_traffic,web_code}`.
+  - `search_traffic_summary()`: Search by semantic query, returning lightweight summaries that include a relevance `distance` and a matched-document `snippet` (length via `--snippet-len`). Auto-detects `web_code` vs traffic documents and shapes the summary accordingly (surfacing `code_type`, `has_secrets`, `dom_sinks`, `endpoints`). Select the collection with `--collection {burp_traffic,web_code}`. Detects the collection's embedding scheme and embeds the query with the matching prompt, falling back to raw text for legacy databases.
+  - `find_similar(id)`: Retrieve the nearest neighbours of an existing document by its stored vector (`--similar-to <id>`) — an embedding-native "more like this" pivot that excludes the seed and honours `--where`/`--n-results`/`--snippet-len`.
   - `get_full_traffic(id)`: Deep dive into the full headers and raw body (or full code chunk) of a specific document using its Document ID.
 
 ## Setup & Usage
@@ -92,6 +94,9 @@ AGENT=~/.config/opencode/skill/jeb-query/scripts/agent_interface.py
 
 # Deep dive into a specific request ID
 "$PY" "$AGENT" --db-path ./chroma_db --id <document_id>
+
+# Pivot: find requests semantically similar to a known-interesting one
+"$PY" "$AGENT" --db-path ./chroma_db --similar-to <document_id> --n-results 10
 ```
 
 ### Hunting in Client-Side Code

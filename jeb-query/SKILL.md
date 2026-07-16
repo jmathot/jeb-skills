@@ -25,6 +25,25 @@ The database holds two collections, selected with `--collection`:
 - `burp_traffic` (default) — one document per request/response pair.
 - `web_code` — client-side application code (HTML/inline+external JS, forms, handlers).
 
+### Embedding scheme (retrieval quality)
+
+Databases built by the current `jeb-import` are stamped with a prefixed embedding
+scheme: the corpus is embedded with embeddinggemma's document prompt, and queries
+are embedded with the matching **query prompt** — `search result` for
+`burp_traffic`, `code retrieval` for `web_code`. This asymmetric prompting
+noticeably improves relevance and is applied automatically.
+
+If you query an **older database built before this scheme**, the tool detects the
+missing stamp, prints a one-line note to stderr, and falls back to raw query text
+(so results are never worse than before). To unlock the improved retrieval, re-run
+`jeb-import` into a **fresh** `chroma_db` directory.
+
+### Reading results
+
+Every search/similar result now includes a `distance` (lower = closer match; use
+it to gauge relevance before deep-diving) and a `snippet` of the matched document.
+Control snippet size with `--snippet-len N` (default `200`; `0` disables snippets).
+
 ---
 
 ## 1. Search traffic (semantic + metadata filter)
@@ -137,3 +156,29 @@ and fetch the complete headers and raw body (traffic) or full code chunk (`web_c
 
 Use this to confirm vulnerabilities by reading the raw HTTP request/response text or the
 complete source code chunk.
+
+---
+
+## 4. Find similar documents (`--similar-to <id>`)
+
+Once you find one interesting document — a confirmed IDOR request, an auth-bypass
+candidate, a secret-bearing JS chunk — pivot to everything that *looks like it* by
+its stored vector. This is the embedding-native "show me more like this" primitive:
+
+```bash
+# Requests semantically similar to a known-interesting one
+~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
+  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
+  --db-path ./chroma_db --similar-to <document_id> --n-results 10
+
+# Similar client-side code chunks (matching collection), filtered
+~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
+  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
+  --db-path ./chroma_db --collection web_code \
+  --similar-to <document_id> --where '{"dom_sinks": {"$ne": ""}}'
+```
+
+The seed document is automatically excluded from its own results. `--similar-to`
+honours `--where`, `--n-results`, and `--snippet-len`. Note: store-only chunks
+(vendor/minified/CSS, `embed: false`) share a placeholder vector, so running
+`--similar-to` on one of them is meaningless and prints a warning.

@@ -4,7 +4,11 @@ import argparse
 import chromadb
 import hashlib
 import time
-from chromadb.utils import embedding_functions
+from embedding import (
+    EMBEDDING_SCHEME,
+    make_ollama_ef,
+    embed_documents,
+)
 
 # Set environment variables for longer timeouts BEFORE importing anything that uses them
 os.environ['OLLAMA_TIMEOUT'] = '3600'  # 60 minutes
@@ -63,8 +67,8 @@ def embed_with_retry(collection, documents, metadatas, ids, embeddings=None, max
                 raise
 
 
-def store_embeddable(collection, chunks):
-    """Embed chunks via the collection's embedding function, batched by chars."""
+def store_embeddable(collection, chunks, ollama_ef):
+    """Embed chunks with the document prompt, batched by chars."""
     MAX_BATCH_CHARS = 10000  # ~10KB per batch (small batches to avoid Ollama timeouts)
     
     if not chunks:
@@ -116,7 +120,8 @@ def store_embeddable(collection, chunks):
         metadatas = [serialize_meta(c['metadata']) for c in batch]
         ids = [get_doc_id(c) for c in batch]
         try:
-            if embed_with_retry(collection, documents, metadatas, ids):
+            embeddings = embed_documents(ollama_ef, documents)
+            if embed_with_retry(collection, documents, metadatas, ids, embeddings=embeddings):
                 total += len(documents)
                 # Progress bar
                 pct = (total / total_chunks) * 100
@@ -195,15 +200,13 @@ def main():
     os.makedirs(db_path, exist_ok=True)
     print(f"Using project ChromaDB at {db_path} (collection: {args.collection})")
 
-    ollama_ef = embedding_functions.OllamaEmbeddingFunction(
-        url="http://localhost:11434/api/embeddings",
-        model_name="embeddinggemma:latest",
-    )
+    ollama_ef = make_ollama_ef()
 
     client = chromadb.PersistentClient(path=db_path)
     collection = client.get_or_create_collection(
         name=args.collection,
         embedding_function=ollama_ef,
+        metadata={"embedding_scheme": EMBEDDING_SCHEME},
     )
 
     # Split chunks by their 'embed' flag (traffic chunks have no flag -> embed).
@@ -214,7 +217,7 @@ def main():
     
     total = 0
     try:
-        total = store_embeddable(collection, embeddable)
+        total = store_embeddable(collection, embeddable, ollama_ef)
     except Exception as e:
         print(f"ERROR during embedding: {e}")
         raise
