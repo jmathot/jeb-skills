@@ -9,6 +9,7 @@ jeb-import/scripts/venv/
 # Pipeline output / project data
 chroma_db/
 parsed_*.json
-webcode_*.json
-chunks_*.json
-codechunks_*.json
+annotated_*.json
+structure_*.json
+behavior_*.json
+vector_space*.html

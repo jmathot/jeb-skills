@@ -7,24 +7,23 @@ Single source of truth for:
   * a schema stamp so a database advertises which embedding scheme built it.
 
 embeddinggemma is trained with *paired* task prompts: documents and queries
-must both be prefixed for the vectors to land in a shared space. The document
-prompt is identical for general and code retrieval; only the query prompt
-differs (general "search result" vs "code retrieval"). We therefore embed the
-whole corpus with the document prompt and choose the query prompt per
-collection at search time.
+must both be prefixed for the vectors to land in a shared space. v2 embeds the
+distilled `embed_text` of every doc with the document prompt and embeds queries
+with a single retrieval prompt (the three collections — structure, behavior,
+attacks — are all distilled security text, so one prompt fits all).
 
-To avoid ever relying on ChromaDB's implicit `query_texts` / document
-embedding (which would skip the prefixes), callers compute explicit prefixed
-embeddings with the helpers below and pass them as `embeddings=` /
-`query_embeddings=`. A plain OllamaEmbeddingFunction is still attached to the
-collection purely for persisted-config compatibility.
+Callers compute explicit prefixed embeddings with the helpers below and pass
+them as `embeddings=` / `query_embeddings=` (never relying on ChromaDB's
+implicit embedding, which would skip the prefixes). A plain
+OllamaEmbeddingFunction is still attached to collections for config
+compatibility.
 """
 
 from chromadb.utils import embedding_functions
 
 # Bump this string whenever the prompt scheme changes so stale databases embedded
 # under an older scheme can be detected (and either handled or rebuilt).
-EMBEDDING_SCHEME = "embeddinggemma-v1-prefixed"
+EMBEDDING_SCHEME = "embeddinggemma-v2-distilled"
 
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
 OLLAMA_MODEL = "embeddinggemma:latest"
@@ -40,24 +39,19 @@ def make_ollama_ef():
 
 
 def doc_prefix(text: str) -> str:
-    """Document/corpus prompt (same for general and code retrieval)."""
+    """Document/corpus prompt."""
     return f"title: none | text: {text}"
 
 
 def query_prefix_search(text: str) -> str:
-    """Query prompt for general semantic retrieval (burp_traffic)."""
+    """Query prompt. v2 embeds three homogeneous collections (structure /
+    behavior / attacks) of distilled security text, so a single retrieval
+    prompt is used for all of them."""
     return f"task: search result | query: {text}"
 
 
-def query_prefix_code(text: str) -> str:
-    """Query prompt for code retrieval (web_code)."""
-    return f"task: code retrieval | query: {text}"
-
-
 def query_prefix_for_collection(collection_name: str, text: str) -> str:
-    """Pick the correct query prompt based on the collection being searched."""
-    if collection_name == "web_code":
-        return query_prefix_code(text)
+    """Kept for call-site compatibility; all v2 collections share one prompt."""
     return query_prefix_search(text)
 
 
@@ -67,6 +61,5 @@ def embed_documents(ollama_ef, texts):
 
 
 def embed_query(ollama_ef, collection_name: str, text: str):
-    """Embed a single query string with the collection-appropriate prompt."""
-    prefixed = query_prefix_for_collection(collection_name, text)
-    return ollama_ef([prefixed])[0]
+    """Embed a single query string with the retrieval prompt."""
+    return ollama_ef([query_prefix_search(text)])[0]

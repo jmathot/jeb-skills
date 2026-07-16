@@ -19,7 +19,6 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 INPUT_XML="$1"
-# Project directory: explicit 2nd arg, else current working directory.
 PROJECT_DIR="${2:-$PWD}"
 
 if [ ! -f "$INPUT_XML" ]; then
@@ -37,30 +36,31 @@ fi
 
 mkdir -p "$PROJECT_DIR"
 
-# get filename without extension and directory
 BASENAME=$(basename "$INPUT_XML")
 BASENAME="${BASENAME%.*}"
 
 PARSED_JSON="$PROJECT_DIR/parsed_${BASENAME}.json"
-WEBCODE_JSON="$PROJECT_DIR/webcode_${BASENAME}.json"
-CHUNKS_JSON="$PROJECT_DIR/chunks_${BASENAME}.json"
-CODECHUNKS_JSON="$PROJECT_DIR/codechunks_${BASENAME}.json"
+ANNOTATED_JSON="$PROJECT_DIR/annotated_${BASENAME}.json"
+STRUCTURE_JSON="$PROJECT_DIR/structure_${BASENAME}.json"
+BEHAVIOR_JSON="$PROJECT_DIR/behavior_${BASENAME}.json"
 DB_PATH="$PROJECT_DIR/chroma_db"
 
 echo "Project directory: $PROJECT_DIR"
-echo "Step 1: Ingesting $INPUT_XML..."
-"$PYTHON" "$SCRIPT_DIR/ingest.py" "$INPUT_XML" -o "$PARSED_JSON" --webcode-output "$WEBCODE_JSON"
+echo "Step 1/5: Parsing $INPUT_XML ..."
+"$PYTHON" "$SCRIPT_DIR/parse.py" "$INPUT_XML" -o "$PARSED_JSON"
 
-echo "Step 2: Chunking $PARSED_JSON..."
-"$PYTHON" "$SCRIPT_DIR/chunker.py" "$PARSED_JSON" -o "$CHUNKS_JSON"
+echo "Step 2/5: Normalising + annotating (SPA/boilerplate/security passes) ..."
+"$PYTHON" "$SCRIPT_DIR/normalize.py" "$PARSED_JSON" -o "$ANNOTATED_JSON"
 
-echo "Step 3: Embedding $CHUNKS_JSON into ChromaDB collection 'burp_traffic' at $DB_PATH..."
-"$PYTHON" "$SCRIPT_DIR/vector_store.py" "$CHUNKS_JSON" --db-path "$DB_PATH" --collection burp_traffic
+echo "Step 3/5: Building the 'structure' collection ..."
+"$PYTHON" "$SCRIPT_DIR/build_structure.py" "$ANNOTATED_JSON" -o "$STRUCTURE_JSON"
+"$PYTHON" "$SCRIPT_DIR/vector_store.py" "$STRUCTURE_JSON" --db-path "$DB_PATH" --collection structure
 
-echo "Step 4: Extracting web application code from $WEBCODE_JSON..."
-"$PYTHON" "$SCRIPT_DIR/code_extractor.py" "$WEBCODE_JSON" -o "$CODECHUNKS_JSON"
+echo "Step 4/5: Building the 'behavior' collection ..."
+"$PYTHON" "$SCRIPT_DIR/build_behavior.py" "$ANNOTATED_JSON" -o "$BEHAVIOR_JSON"
+"$PYTHON" "$SCRIPT_DIR/vector_store.py" "$BEHAVIOR_JSON" --db-path "$DB_PATH" --collection behavior
 
-echo "Step 5: Embedding $CODECHUNKS_JSON into ChromaDB collection 'web_code' at $DB_PATH..."
-"$PYTHON" "$SCRIPT_DIR/vector_store.py" "$CODECHUNKS_JSON" --db-path "$DB_PATH" --collection web_code
-
+echo "Step 5/5: Done. The 'attacks' collection is created on demand by"
+echo "          jeb-query's record-attack during active testing."
+echo ""
 echo "Processing complete! Data stored in $PROJECT_DIR"

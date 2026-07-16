@@ -1,184 +1,153 @@
 ---
 name: jeb-query
-description: Query step for J.E.B. — hunt for vulnerabilities and analyze Burp traffic and client-side web code stored in a per-project ChromaDB. USE WHEN searching/querying an already-imported Burp database, hunting vulns, semantic search over HTTP traffic, filtering requests by metadata, hunting DOM XSS sinks / secrets / hidden endpoints in web_code, or deep-diving a specific request/response by id. To first parse and embed a Burp XML export, use the jeb-import skill.
+description: Query step for J.E.B. — hunt for vulnerabilities across a Burp capture mapped into three ChromaDB collections (structure, behavior, attacks). USE WHEN searching/querying an already-imported Burp database, hunting vulns, mapping the site/endpoints, semantic search over request/response behavior, filtering by metadata or raw header/cookie substrings, recording attack results, or deep-diving a specific doc by id. To first parse and embed a Burp XML export, use the jeb-import skill.
 ---
 
-# J.E.B. — Query / Hunting Interface
+# J.E.B. — Query / Hunting Interface (v2)
 
-This skill queries a ChromaDB that was populated by the **`jeb-import`** skill. If the
+This skill queries a ChromaDB populated by the **`jeb-import`** skill. If the
 database does not exist yet, run `jeb-import` first.
-
-Queries use this skill's `agent_interface.py` script, run with the shared venv that
-was created by (and lives in) the `jeb-import` skill folder:
 
 ```
 PY=~/.config/opencode/skill/jeb-import/scripts/venv/bin/python
 AGENT=~/.config/opencode/skill/jeb-query/scripts/agent_interface.py
 ```
 
-**Always query the database belonging to the project you are working on.** Run these
-commands **from the project directory** so `./chroma_db` resolves to that project's own
-database, or pass `--db-path <project_dir>/chroma_db` explicitly. Data from separate
-projects is never mixed.
+**Always query the database belonging to the project you are working on.** Run
+from the project directory so `./chroma_db` resolves to that project's DB, or pass
+`--db-path <project_dir>/chroma_db`. Data from separate projects is never mixed.
 
-The database holds two collections, selected with `--collection`:
-- `burp_traffic` (default) — one document per request/response pair.
-- `web_code` — client-side application code (HTML/inline+external JS, forms, handlers).
+## The three collections (`--collection`)
 
-### Embedding scheme (retrieval quality)
+- **`structure`** — the site map: endpoint templates, pages, actions, and one
+  per-host `auth_model` node. Start here to understand the app and to find
+  broken-access-control candidates.
+- **`behavior`** (default) — one doc per distinct request/response behavior.
+- **`attacks`** — results of your active testing, written by `record-attack`.
 
-Databases built by the current `jeb-import` are stamped with a prefixed embedding
-scheme: the corpus is embedded with embeddinggemma's document prompt, and queries
-are embedded with the matching **query prompt** — `search result` for
-`burp_traffic`, `code retrieval` for `web_code`. This asymmetric prompting
-noticeably improves relevance and is applied automatically.
+## How search works
 
-If you query an **older database built before this scheme**, the tool detects the
-missing stamp, prints a one-line note to stderr, and falls back to raw query text
-(so results are never worse than before). To unlock the improved retrieval, re-run
-`jeb-import` into a **fresh** `chroma_db` directory.
+The vector is a distilled, value-suppressed summary of each doc; the stored
+document is the **raw HTTP** (behavior/attacks) or a readable node report
+(structure). So:
+- semantic `--query` matches concepts (incl. a security clause: cookies, missing
+  headers, CORS, cross-site origin, JWT alg),
+- `--where` filters metadata facets (equality / `$in` / numeric ranges),
+- `--where-document` substring-matches the **raw** headers/cookies/body.
 
-### Reading results
-
-Every search/similar result now includes a `distance` (lower = closer match; use
-it to gauge relevance before deep-diving) and a `snippet` of the matched document.
-Control snippet size with `--snippet-len N` (default `200`; `0` disables snippets).
+Every result includes a `distance` (lower = closer) and a `summary` snippet.
 
 ---
 
-## 1. Search traffic (semantic + metadata filter)
-
-Pull lightweight summaries of traffic matching a concept. Filter the vector search with
-ChromaDB metadata filters via `--where`.
+## 1. Map the app (`--collection structure`)
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
-  --db-path ./chroma_db \
-  --query "<semantic search query>" --where '{"method": "POST", "auth_role": "admin"}'
+"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+  --query "authentication and account management"
+```
+Read the per-host **auth model** node (`--where '{"node_kind":"auth_model"}'`) to
+see which cookies are set vs consumed where, the token type, and the app-wide
+missing-header posture.
+
+**Broken access control** — endpoints reachable without credentials:
+```bash
+"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+  --query "admin or sensitive endpoint" --where '{"anon_allowed": true}'
 ```
 
-This returns a list of summaries. Pay special attention to **Broken Access Control**
-signals — an `authenticated: false` request receiving a `2xx` on a sensitive endpoint,
-or a low-privilege `auth_role` reaching privileged endpoints — as well as interesting
-`body_params` (SQLi/XSS targets) and `cors_wildcard` status.
+### `structure` filterable fields
+- `doc_kind` (str): always `structure`
+- `node_kind` (str): `page` | `endpoint` | `action` | `auth_model`
+- `host`, `endpoint_template`, `method` (str)
+- `param_names` (str, csv), `produces` (str, csv content types)
+- `status_codes` (str, csv), `path_depth` (int), `instance_count` (int)
+- `authenticated_ever` (bool), `anon_allowed` (bool)
+- `auth_mechanisms` (str, csv), `cookies_sent` (str, csv), `cookies_set` (str, csv)
+- `security_headers_missing` (str, csv), `cors` (str: `*`/`reflected`/`null`/`specific`)
+- `is_static` (bool), `example_ids` (str, csv — behavior ids to pivot into)
 
-Numeric fields (`status_code`, `resp_len`, `port`, `param_count`) support range
-operators. Example — server-side errors with large bodies (potential stack traces /
-info disclosure):
+---
+
+## 2. Hunt behavior (`--collection behavior`, default)
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
-  --db-path ./chroma_db \
-  --query "server error stack trace" \
+"$PY" "$AGENT" --db-path ./chroma_db \
+  --query "password reset token in response" --where '{"method": "POST"}'
+```
+
+Numeric fields support ranges — server errors with large bodies:
+```bash
+"$PY" "$AGENT" --db-path ./chroma_db --query "server error stack trace" \
   --where '{"$and": [{"status_code": {"$gte": 500}}, {"resp_len": {"$gte": 5000}}]}'
 ```
 
-Use `{"is_static": false}` to exclude js/css/image noise from *traffic* searches. This
-does not hide client-side code from analysis — the actual HTML/JS is retained and
-searchable in the separate `web_code` collection (below); filtering `is_static` here
-only trims redundant static-asset request/response pairs.
+Filter on **raw** header/cookie text with `--where-document` (substring, case
+sensitive):
+```bash
+# CORS wildcard responses
+"$PY" "$AGENT" --db-path ./chroma_db --query "cross origin api" \
+  --where-document '{"$contains": "Access-Control-Allow-Origin: *"}'
 
-### `burp_traffic` filterable fields
-- `url` (string): The full URL
-- `endpoint` (string): The URL path (e.g., `/rest/user/login`)
-- `host` (string): The request hostname (useful for multi-host scoping)
-- `scheme` (string): `http` or `https` (flag plaintext traffic)
-- `port` (int): The destination port
-- `method` (string): HTTP method (`GET`, `POST`, etc.)
-- `status` (string): HTTP response status code as text (`200`, `404`, etc.)
-- `status_code` (int): Numeric status code — supports range filters (e.g. `{"status_code": {"$gte": 500}}`)
-- `status_class` (string): Status bucket (`2xx`, `3xx`, `4xx`, `5xx`)
-- `url_params` (string): Comma-separated list of URL query parameters
-- `cookies` (string): Comma-separated list of cookie names sent in the request
-- `body_params` (string): Comma-separated list of body parameters (from JSON or Form-Data)
-- `param_count` (int): Total number of URL + body parameters
-- `req_content_type` (string): Request Content-Type media type (e.g. `application/json`, `multipart/form-data`)
-- `mimetype` (string): The response mimetype (e.g., `html`, `script`, `json`)
-- `file_ext` (string): File extension of the endpoint (e.g. `php`, `json`, `js`)
-- `is_static` (boolean): `true` for static assets (js/css/image/font) — filter these out to reduce noise
-- `referer` (string): The Referer header from the request
-- `cors_wildcard` (boolean): `true` if `Access-Control-Allow-Origin: *` is in the response
-- `auth_role` (string): Parsed from JWT or session (`admin`, `authenticated`, `anonymous`)
-- `authenticated` (boolean): `true` if the request carries credentials (Authorization header, a session/auth cookie, a JWT-shaped cookie value, or a custom API-key header)
-- `time` (string): UTC timestamp of the request from Burp Suite (not numeric)
-- `responselength` (string): Length of the response in bytes as text
-- `resp_len` (int): Numeric response length — supports range filters (e.g. find large responses)
+# Session cookies without SameSite
+"$PY" "$AGENT" --db-path ./chroma_db --query "session cookie" \
+  --where-document '{"$contains": "Set-Cookie"}'
+```
+
+Use `{"is_static": false}` to drop js/css/image noise.
+
+### `behavior` filterable fields
+- `doc_kind` (str): always `behavior`
+- `host`, `endpoint_template`, `method` (str)
+- `status_code` (int, ranges), `resp_len` (int, ranges)
+- `param_names` (str, csv), `param_count` (int)
+- `req_content_type`, `resp_content_type` (str)
+- `is_static` (bool), `instance_count` (int), `time` (str)
+- `authenticated` (bool), `auth_role` (str), `auth_mechanism` (str:
+  `cookie-session`/`bearer-jwt`/`bearer-opaque`/`basic`/`api-key-header`/`custom-header`/`none`)
+- `cookie_names` (str, csv — sent), `set_cookies` (str, csv — name+flags)
+- `cookie_issues` (str, csv — e.g. `SID:no-httponly,no-samesite`)
+- `security_headers_missing` (str, csv), `cors` (str, e.g. `* creds`)
+- `jwt` (str, e.g. `alg=none;claims=sub,role,exp`), `redirect_location` (str)
+
+> Compact csv fields (`cookie_issues`, `security_headers_missing`, …) support
+> equality / `$in` only. For precise substring matching, use `--where-document`
+> against the raw HTTP.
 
 ---
 
-## 2. Hunt in client-side code (`--collection web_code`)
-
-This is where DOM XSS sinks, hardcoded secrets, and hidden/undocumented endpoints live:
+## 3. Deep dive / recall by id (`--id`)
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
-  --db-path ./chroma_db --collection web_code \
-  --query "authentication token handling" --where '{"has_secrets": true}'
+"$PY" "$AGENT" --db-path ./chroma_db --collection behavior --id <document_id>
 ```
+Returns the full metadata and the raw request/response (or the node report for
+`structure`). Use `example_ids` from a `structure` node to jump to its behaviors.
 
-Useful `web_code` filters:
-- `{"dom_sinks": {"$ne": ""}}` — potential DOM XSS
-- `{"code_type": "form"}` — input surfaces
-- `{"code_type": "inline_js"}` — inline scripts
-
-### `web_code` filterable fields
-- `content_kind` (string): always `web_code`
-- `code_type` (string): `html`, `inline_js`, `external_js`, `vendor_js`, `script_ref`, `form`, `event_handler`, or `css`
-- `host` / `source_url` (string): where the artifact was served from
-- `source_urls` (string) / `url_count` (int): every URL this exact code appeared at
-- `chunk_index` / `total_chunks` (int): position within the source artifact
-- `has_secrets` (boolean): regex hit for API keys / tokens / private keys / JWTs
-- `dom_sinks` (string): comma-separated DOM-XSS sinks found (`innerHTML`, `eval`, `document.write`, `postMessage`, …)
-- `endpoints` (string) / `endpoint_count` (int): URLs/paths referenced in the code
-- `embed` (boolean): `false` for store-only vendor/minified bundles (retrievable by `id` but excluded from semantic search)
-
----
-
-## 3. Deep dive / recall by id
-
-When you spot a suspicious or interesting document from a summary list, grab its `id`
-and fetch the complete headers and raw body (traffic) or full code chunk (`web_code`):
+## 4. Find similar (`--similar-to <id>`)
 
 ```bash
-# Traffic request/response
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
-  --db-path ./chroma_db --id <document_id>
-
-# Full web_code chunk (use the matching collection)
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
-  --db-path ./chroma_db --collection web_code --id <document_id>
+"$PY" "$AGENT" --db-path ./chroma_db --similar-to <document_id> --n-results 10
 ```
+Nearest neighbours by stored vector — the "more like this" pivot. Honours
+`--where`, `--where-document`, `--n-results`.
 
-Use this to confirm vulnerabilities by reading the raw HTTP request/response text or the
-complete source code chunk.
+## 5. Record an attack result (`--record-attack`)
 
----
-
-## 4. Find similar documents (`--similar-to <id>`)
-
-Once you find one interesting document — a confirmed IDOR request, an auth-bypass
-candidate, a secret-bearing JS chunk — pivot to everything that *looks like it* by
-its stored vector. This is the embedding-native "show me more like this" primitive:
-
+After actively testing a request, persist the outcome to the `attacks`
+collection so it is searchable and remembered across sessions:
 ```bash
-# Requests semantically similar to a known-interesting one
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
-  --db-path ./chroma_db --similar-to <document_id> --n-results 10
-
-# Similar client-side code chunks (matching collection), filtered
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-query/scripts/agent_interface.py \
-  --db-path ./chroma_db --collection web_code \
-  --similar-to <document_id> --where '{"dom_sinks": {"$ne": ""}}'
+"$PY" "$AGENT" --db-path ./chroma_db --record-attack \
+  --vuln-class SQLi --endpoint "https://app/rest/products/search" --method GET \
+  --param q --payload "' OR 1=1--" --status 500 --verdict vulnerable \
+  --severity high --source-id <behavior_id> \
+  --evidence "SQLSyntaxErrorException" \
+  --request-file req.txt --response-file resp.txt
 ```
+Verdicts: `vulnerable` | `not_vulnerable` | `inconclusive`. Query them back with
+`--collection attacks --query "..."` or `--where '{"verdict":"vulnerable"}'`.
 
-The seed document is automatically excluded from its own results. `--similar-to`
-honours `--where`, `--n-results`, and `--snippet-len`. Note: store-only chunks
-(vendor/minified/CSS, `embed: false`) share a placeholder vector, so running
-`--similar-to` on one of them is meaningless and prints a warning.
+### `attacks` filterable fields
+- `doc_kind` (str): always `attack`
+- `vuln_class`, `verdict`, `severity` (str)
+- `host`, `endpoint_template`, `method`, `param` (str)
+- `status_code` (int), `source_behavior_id` (str), `payload` (str), `tool` (str), `time` (str)

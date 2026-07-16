@@ -1,123 +1,124 @@
 # J.E.B.E.D.I.A.H. (John's Extension for Burpsuite Export Data Ingestion And Handling)
 
 ## Project Overview
-This project provides a Retrieval-Augmented Generation (RAG) framework designed specifically to ingest, parse, and structure exported Burp Suite XML data. The goal is to provide an AI agent with a highly efficient, token-optimized context window of HTTP traffic so it can identify security vulnerabilities, with a focus on minimizing context usage, high accuracy, and persistence between sessions.
+J.E.B. is a Retrieval-Augmented Generation (RAG) framework that ingests exported
+Burp Suite XML and maps a web application into vector space so an AI agent can
+reason about it and predict likely attacks — with a focus on **low context cost,
+high signal, and cross-endpoint/attack context** (cookies, headers, auth flow),
+and persistence between sessions.
 
-## Architecture & Features
+## The v2 idea: search distilled, store raw
 
-The framework consists of a robust pipeline that processes raw Burp traffic into queryable, context-rich embeddings:
+The core problem in v1 was embedding noise: each vector was built from the full
+request+response **including headers and cookies**, so repeated `Cookie` /
+`Authorization` / `Set-Cookie` blocks dominated the space and unrelated endpoints
+looked similar.
 
-### Phase 1: Ingestion & Filtering (`ingest.py`)
-- **Purpose**: Parses Burp Suite XML exports, decodes base64 request/response bodies, drops token-heavy/useless headers (while retaining security headers like CSP and X-Frame-Options), minifies HTML in the *traffic* documents, and filters out binary data.
-- **Web-code retention**: In addition to the lean traffic documents, ingest keeps **one deduplicated copy (by content hash) of every HTML/JS/CSS artifact** and writes it to `webcode_<name>.json`. This is the raw client-side application code, retained in full.
-- **Deduplication**: Deduplicates traffic by `(method, normalized_url, body_hash)` and client-side code by content hash (recording every URL an artifact appeared at).
-- **Output**: `parsed_<name>.json` (lean traffic) and `webcode_<name>.json` (full web-app code corpus).
+v2 separates **what is searched** from **what is stored**. Every document is
+vectorised from a distilled, *value-suppressed* `embed_text` (method, templated
+path, parameter *names*, response schema/summary, and a compact security clause of
+cookie/header *features* — never their values). The raw HTTP is kept verbatim as
+the retrieval document, so nothing is lost for deep-dive and for
+`--where-document` substring filtering over real headers/cookies.
 
-### Phase 2: Chunking & Structuring (`chunker.py`)
-- **Purpose**: Consumes the output of Phase 1 and structures it into individual Request/Response pairs. Generates rich metadata for hybrid search.
-- **Advanced Metadata Extraction**: 
-  - `auth_role`: Parses Base64 JWT tokens or cookies to determine if the requester is `admin`, `authenticated`, or `anonymous`.
-  - `authenticated`: A generic boolean that is `true` when the request carries credentials — an Authorization header, a curated session/auth cookie name, a JWT-shaped cookie value, or a custom API-key header (`x-api-key`, etc.). Works across targets and aids in finding broken access control.
-  - `status_code` & `resp_len`: Numeric copies of status/response length that support ChromaDB range filters (e.g. `status_code >= 500`, large responses).
-  - `status_class`, `host`, `scheme`, `port`, `req_content_type`, `file_ext`, `param_count`: Lean scalar fields for scoping and filtering.
-  - `is_static`: Flags static assets (js/css/image/font) so they can be filtered out to reduce noise.
-  - `cookies` & `body_params`: Extracts cookie names and POST body parameters (JSON and Form-urlencoded) for parameter mapping.
-  - `referer` & `cors_wildcard`: Captures user flow and loose CORS policies.
-  - `time` & `responselength`: Captures response sizing and (UTC string) timestamp details.
-- **Output**: `chunks_<name>.json`
+## Three collections
 
-### Phase 2b: Web Application Code Extraction (`code_extractor.py`)
-- **Purpose**: Turns the deduplicated `webcode_<name>.json` corpus into tag/structure-aware chunks so the client-side code is a first-class analysis target.
-- **HTML** is split at tag boundaries: each `<script>` (inline and external ref), `<form>` (action/method/inputs), inline event handlers (`onclick`, …), and the residual DOM skeleton become their own chunks.
-- **External JS** is classified **first-party vs vendor/minified**. First-party code is chunked by function/size and embedded; vendor/minified bundles (jQuery, React, `*.min.js`, …) are stored **store-only** (`embed: false`) — retrievable by id but excluded from semantic search to avoid noise and embedding cost.
-- **Hunting metadata** per chunk: `content_kind: web_code`, `code_type`, `has_secrets` (API keys/tokens/JWTs/private keys), `dom_sinks` (`innerHTML`, `eval`, `document.write`, …), `endpoints` (referenced URLs/paths), plus `source_url(s)`, `chunk_index`/`total_chunks`.
-- **Output**: `codechunks_<name>.json`
+1. **`structure`** — the site map. One node per `(host, method, endpoint_template)`
+   with volatile path segments normalised (`/rest/products/1` → `/rest/products/{id}`),
+   plus one synthetic **`auth_model`** node per host that summarises which cookies
+   are set vs consumed where, the token type, and the app-wide missing-header
+   posture. Endpoints/pages/actions carry `anon_allowed`, `authenticated_ever`,
+   `param_names`, `produces`, `cookies_set/sent`, `security_headers_missing`,
+   `cors`, and `example_ids` linking to behaviors.
+2. **`behavior`** — one doc per **distinct behavior**. Near-duplicate instances
+   (e.g. `/products/1..500`) collapse to a representative + `instance_count`; the
+   collapse key includes status, auth role, and response schema so security-
+   relevant variations never merge. Metadata carries lean functional scalars plus
+   compact security features (`auth_role`, `auth_mechanism`, `cookie_names`,
+   `set_cookies`, `cookie_issues`, `security_headers_missing`, `cors`, `jwt`,
+   `redirect_location`).
+3. **`attacks`** — results of active testing, written during hunting by
+   `jeb-query`'s `record-attack` (payload, response, verdict, severity, evidence,
+   and a link back to the source behavior).
 
-### Phase 3: Vector Storage (`vector_store.py`)
-- **Purpose**: Embeds the structured documents using a local Ollama embedding model (`embeddinggemma:latest`). Leverages ChromaDB to allow both semantic search and metadata filtering. Serializes metadata arrays into strings. Includes retry/backoff on transient embedding failures.
-- **Asymmetric prompts**: Embedding uses embeddinggemma's paired task prompts via the shared `embedding.py` helper — the corpus is embedded with the document prompt (`title: none | text: …`), and each collection is stamped with an `embedding_scheme` so the query side can apply the matching query prompt (`search result` for traffic, `code retrieval` for `web_code`). This improves retrieval relevance.
-- **Two collections**: traffic is embedded into `burp_traffic`; web-app code into `web_code` (via `--collection`). Store-only chunks (`embed: false`) are persisted with a fixed placeholder vector so they remain fetchable by id without polluting search.
-- **Per-project isolation**: The ChromaDB is always co-located with the project's chunks file (or an explicit `--db-path`), so **each project keeps its own database** and traffic from separate projects is never mixed.
+## Pipeline
 
-### Phase 4: Agent Interface (`agent_interface.py`, in the `jeb-query` skill)
-- **Purpose**: Connects the agent to the ChromaDB instance. This query script lives
-  in the `jeb-query` skill (`jeb-query/scripts/agent_interface.py`) but is run with
-  this skill's shared venv python.
-- **Functions**: 
-  - `search_traffic_summary()`: Search by semantic query, returning lightweight summaries that include a relevance `distance` and a matched-document `snippet` (length via `--snippet-len`). Auto-detects `web_code` vs traffic documents and shapes the summary accordingly (surfacing `code_type`, `has_secrets`, `dom_sinks`, `endpoints`). Select the collection with `--collection {burp_traffic,web_code}`. Detects the collection's embedding scheme and embeds the query with the matching prompt, falling back to raw text for legacy databases.
-  - `find_similar(id)`: Retrieve the nearest neighbours of an existing document by its stored vector (`--similar-to <id>`) — an embedding-native "more like this" pivot that excludes the seed and honours `--where`/`--n-results`/`--snippet-len`.
-  - `get_full_traffic(id)`: Deep dive into the full headers and raw body (or full code chunk) of a specific document using its Document ID.
+`parse → normalize → build_structure → embed → build_behavior → embed`
 
-## Setup & Usage
+- **`parse.py`** — parse/decode/split/dedupe; retain broad raw headers (only
+  browser-hint noise stripped).
+- **`distill.py`** — pure library: endpoint templating, parameter/credential/
+  JWT/cookie/header feature extraction, the response-type router (API schema / MPA
+  page / SPA shell / static / redirect), boilerplate helpers, and the
+  `embed_text` + `summary` formatters.
+- **`normalize.py`** — corpus passes (SPA-shell collapse, per-host MPA boilerplate
+  subtraction), per-item annotation, and per-host auth-model aggregation.
+- **`build_structure.py` / `build_behavior.py`** — emit `{id, embed_text,
+  page_content, metadata}` chunks.
+- **`vector_store.py`** — embed `embed_text` (embeddinggemma via Ollama), store
+  `page_content` as the document; stamp the collection's `embedding_scheme`.
 
-All scripts live in the `scripts/` directory. Intermediate data (`parsed_*.json`,
-`chunks_*.json`) and the `chroma_db/` directory are written to the **project
-directory** (your current working directory by default), never into the skill folder.
+Each project keeps its **own** `chroma_db/` co-located with its data, so traffic
+from separate projects is never mixed.
 
-### Prerequisites
-Make sure you have Python 3 installed. You must have [Ollama](https://ollama.com/)
-running locally with the `embeddinggemma:latest` model pulled.
+## Setup
 
-Create the one-time virtual environment inside `scripts/` (shared across projects):
+Prerequisites: Python 3, and [Ollama](https://ollama.com/) running locally with
+`embeddinggemma:latest` pulled. Create the one-time venv:
 
 ```bash
 python3 -m venv scripts/venv
 scripts/venv/bin/pip install -r scripts/requirements.txt
 ```
 
-### Running the Pipeline
-
-Run the entire pipeline with the bash wrapper. It can be invoked from anywhere; all
-output lands in the project directory (the current directory by default, or an
-explicit second argument):
+## Running the pipeline
 
 ```bash
-scripts/process_burp.sh path/to/your/burp_export.xml [project_dir]
+scripts/process_burp.sh path/to/burp_export.xml [project_dir]
 ```
+Outputs `parsed_*.json`, `annotated_*.json`, `structure_*.json`, `behavior_*.json`
+and `chroma_db/` into the project directory (current directory by default).
 
-### Querying the Database
+## Querying
 
-Querying is handled by the **`jeb-query`** skill, whose `agent_interface.py` is run
-with this skill's shared venv python. Run from the project directory (so `./chroma_db`
-resolves to that project), or pass `--db-path <project_dir>/chroma_db` explicitly:
+Handled by the **`jeb-query`** skill (`agent_interface.py`), run with this skill's
+venv. Highlights:
 
 ```bash
 PY=~/.config/opencode/skill/jeb-import/scripts/venv/bin/python
 AGENT=~/.config/opencode/skill/jeb-query/scripts/agent_interface.py
 
-# Get summaries of traffic matching a concept
-"$PY" "$AGENT" --db-path ./chroma_db --query "shopping cart checkout"
+# Map the app / find anonymously-reachable endpoints
+"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+  --query "sensitive endpoint" --where '{"anon_allowed": true}'
 
-# Filter with metadata, including numeric range operators
-"$PY" "$AGENT" --db-path ./chroma_db \
-  --query "server error" --where '{"status_code": {"$gte": 500}}'
+# Behavior search + numeric range
+"$PY" "$AGENT" --db-path ./chroma_db --query "server error" \
+  --where '{"status_code": {"$gte": 500}}'
 
-# Deep dive into a specific request ID
-"$PY" "$AGENT" --db-path ./chroma_db --id <document_id>
+# Substring over raw headers (CORS wildcard, cookie flags, …)
+"$PY" "$AGENT" --db-path ./chroma_db --query "cross origin" \
+  --where-document '{"$contains": "Access-Control-Allow-Origin: *"}'
 
-# Pivot: find requests semantically similar to a known-interesting one
-"$PY" "$AGENT" --db-path ./chroma_db --similar-to <document_id> --n-results 10
+# Deep dive, pivot, and record a finding
+"$PY" "$AGENT" --db-path ./chroma_db --id <id>
+"$PY" "$AGENT" --db-path ./chroma_db --similar-to <id> --n-results 10
+"$PY" "$AGENT" --db-path ./chroma_db --record-attack --vuln-class SQLi \
+  --endpoint https://app/rest/search --method POST --param q \
+  --payload "' OR 1=1--" --status 500 --verdict vulnerable --severity high
 ```
 
-### Hunting in Client-Side Code
+See the `jeb-query` skill for the full filterable-field reference per collection.
 
-The client-side application code lives in the separate `web_code` collection. Query it
-to find DOM XSS sinks, hardcoded secrets, and hidden endpoints:
+## Visualizing the vector space
+
+`visualize.py` renders the embeddings as a self-contained interactive HTML scatter
+(UMAP by default, PCA fallback) with optimization diagnostics — a nearest-neighbour
+distance histogram, a tightest-cluster / near-duplicate report, and inter-collection
+separation stats — so you can see where the distillation can be tuned.
 
 ```bash
-# Semantic search over the web-app code
-"$PY" "$AGENT" --db-path ./chroma_db \
-  --collection web_code --query "auth token handling"
-
-# Only chunks that matched a secret regex
-"$PY" "$AGENT" --db-path ./chroma_db \
-  --collection web_code --query "api key" --where '{"has_secrets": true}'
-
-# Potential DOM XSS sinks
-"$PY" "$AGENT" --db-path ./chroma_db \
-  --collection web_code --query "user input to DOM" --where '{"dom_sinks": {"$ne": ""}}'
-
-# Read a full code chunk by id
-"$PY" "$AGENT" --db-path ./chroma_db \
-  --collection web_code --id <document_id>
+scripts/venv/bin/pip install -r scripts/requirements-viz.txt
+scripts/venv/bin/python scripts/visualize.py \
+  --db-path ./chroma_db --collection all --color-by doc_kind --out vector_space.html
 ```
