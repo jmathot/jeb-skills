@@ -55,13 +55,28 @@ missing-header posture.
   --query "admin or sensitive endpoint" --where '{"anon_allowed": true}'
 ```
 
+`anon_allowed: true` means an anonymous request actually **received application
+data** (real broken access control) — it is content-aware, so a "200 OK that
+returns the login page" (a *soft auth wall*) is **not** flagged. Those are marked
+`access_control: soft-auth-wall` instead. Find soft walls (endpoints that are
+protected but answer 200 with a login/deny page) separately:
+```bash
+"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+  --where '{"access_control": "soft-auth-wall"}'
+```
+`anon_matches_auth: true` on a behavior doc is the strongest signal: the anon
+response matched the authenticated response byte-for-structure.
+
 ### `structure` filterable fields
 - `doc_kind` (str): always `structure`
 - `node_kind` (str): `page` | `endpoint` | `action` | `auth_model`
 - `host`, `endpoint_template`, `method` (str)
 - `param_names` (str, csv), `produces` (str, csv content types)
 - `status_codes` (str, csv), `path_depth` (int), `instance_count` (int)
-- `authenticated_ever` (bool), `anon_allowed` (bool)
+- `authenticated_ever` (bool), `anon_allowed` (bool — anon received real data)
+- `anon_soft_denied` (bool — anon got a 200 login/deny surrogate)
+- `access_control` (str): `open-data` (real BAC) | `soft-auth-wall` | `enforced`
+  (saw 401/403) | `unknown`
 - `auth_mechanisms` (str, csv), `cookies_sent` (str, csv), `cookies_set` (str, csv)
 - `security_headers_missing` (str, csv), `cors` (str: `*`/`reflected`/`null`/`specific`)
 - `is_static` (bool), `example_ids` (str, csv — behavior ids to pivot into)
@@ -102,6 +117,9 @@ Use `{"is_static": false}` to drop js/css/image noise.
 - `param_names` (str, csv), `param_count` (int)
 - `req_content_type`, `resp_content_type` (str)
 - `is_static` (bool), `instance_count` (int), `time` (str)
+- `access_class` (str): `data` | `auth_wall` | `shell` | `denied` | `redirect` |
+  `empty` | `static` — what the response actually delivered
+- `anon_matches_auth` (bool — anon response matched the authenticated one)
 - `authenticated` (bool), `auth_role` (str), `auth_mechanism` (str:
   `cookie-session`/`bearer-jwt`/`bearer-opaque`/`basic`/`api-key-header`/`custom-header`/`none`)
 - `cookie_names` (str, csv — sent), `set_cookies` (str, csv — name+flags)

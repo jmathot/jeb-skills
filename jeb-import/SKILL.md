@@ -57,6 +57,12 @@ steps:
    - **value-suppressed security features**: auth mechanism, cookie names, JWT
      alg + claim names, Set-Cookie flags, missing security headers, CORS posture,
      cross-site Origin, CSRF token presence.
+   - **content-aware access classification**: each response is labelled
+     `data` / `auth_wall` / `shell` / `denied` so a "200 OK that returns the
+     login page" (soft auth wall) is not mistaken for anonymous access. Uses
+     per-host login-page fingerprints, login-form/keyword heuristics, JSON
+     `unauthorized`/`authenticated:false` envelopes, and an anon-vs-authenticated
+     differential.
    - **auth-model aggregation**: per host, which cookies are set vs consumed where.
 3. **`build_structure.py`** → the **`structure`** collection.
 4. **`vector_store.py --collection structure`** — embed it.
@@ -72,8 +78,10 @@ The `attacks` collection starts empty and is written during hunting by
   (volatile path segments normalised to `{id}`/`{uuid}`/`{hash}`/…), plus one
   synthetic `auth_model` node per host. Carries `node_kind` (page/endpoint/action/
   auth_model), `param_names`, `produces`, `status_codes`, `authenticated_ever`,
-  `anon_allowed`, `auth_mechanisms`, `cookies_sent`, `cookies_set`,
-  `security_headers_missing`, `cors`, `instance_count`, `example_ids`.
+  `anon_allowed` (anon received real data — content-aware), `anon_soft_denied`,
+  `access_control` (`open-data`/`soft-auth-wall`/`enforced`/`unknown`),
+  `auth_mechanisms`, `cookies_sent`, `cookies_set`, `security_headers_missing`,
+  `cors`, `instance_count`, `example_ids`.
 - **`behavior`** — one doc per **distinct behavior** (collapse key includes
   status, auth role, and response schema so security-relevant variations never
   merge). Raw HTTP is the retrieval document. Carries lean functional scalars plus

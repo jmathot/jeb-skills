@@ -55,6 +55,25 @@ AUTH_HEADER_SIGNALS = (
 )
 CSRF_SIGNALS = ('csrf', 'xsrf')
 
+# Signals that a response is a login / auth-wall page rather than real content.
+# A 200 that serves one of these is a *soft* access denial, not broken access.
+LOGIN_TEXT_SIGNALS = (
+    'sign in', 'signin', 'sign-in', 'log in', 'login', 'log on', 'logon',
+    'session expired', 'session has expired', 'please log in', 'please sign in',
+    'access denied', 'not authorized', 'unauthorized', 'authentication required',
+    'you must be logged in', 'forgot password', 'remember me',
+)
+LOGIN_PATH_SIGNALS = (
+    'login', 'signin', 'sign-in', 'sso', 'authenticate', 'session', 'account/login',
+    'auth/login', 'user/login',
+)
+JSON_AUTHWALL_SIGNALS = (
+    'unauth', 'not authorized', 'not authenticated', 'forbidden', 'login required',
+    'please log in', 'please sign in', 'sign in', 'access denied', 'permission denied',
+    'invalid token', 'token expired', 'session expired', 'authentication required',
+)
+
+
 # Response security headers whose *absence* is a finding.
 SECURITY_HEADERS = {
     'content-security-policy': 'csp',
@@ -491,7 +510,47 @@ def is_spa_shell_html(body: str) -> bool:
     return has_mount or has_bundle
 
 
+# ---------------------------------------------------------------------------
+# Access classification (login / auth-wall detection)
+# ---------------------------------------------------------------------------
+def is_login_path(path: str) -> bool:
+    p = (path or '').lower()
+    return any(sig in p for sig in LOGIN_PATH_SIGNALS)
+
+
+def login_redirect(location: str) -> bool:
+    """True if a redirect/Location points at a login/auth destination."""
+    return is_login_path(location or '')
+
+
+def json_auth_wall(body: str, messages=None) -> bool:
+    """True if a JSON/text body is really an 'unauthorized' / 'log in' response."""
+    hay = (" ".join(messages) if messages else "").lower()
+    if not hay:
+        hay = (body or '')[:600].lower()
+    if any(sig in hay for sig in JSON_AUTHWALL_SIGNALS):
+        return True
+    # {"authenticated": false} / {"loggedIn": false} style envelopes.
+    return bool(re.search(r'"(?:authenticated|logged_?in|isauthenticated)"\s*:\s*false',
+                          (body or '')[:600], re.I))
+
+
+def html_login_signals(body: str) -> dict:
+    """Detect a login page. A password input is required for the heuristic to
+    fire (so a mere 'Login' nav link on a public page does not match)."""
+    low = (body or '').lower()
+    password_field = bool(re.search(r'<input[^>]+type=["\']?password', low))
+    login_form = password_field and bool(re.search(
+        r'<form[^>]+action=["\'][^"\']*(?:login|signin|sign-in|authenticate|session)', low))
+    # Visible text signals (title / short body) — used to raise confidence.
+    text_signal = any(sig in low for sig in LOGIN_TEXT_SIGNALS)
+    is_login = password_field and (login_form or text_signal)
+    return {'password_field': password_field, 'login_form': login_form,
+            'text_signal': text_signal, 'is_login': is_login}
+
+
 def classify_response(status_code, resp_headers, resp_body, resp_ct, file_ext,
+
                       mimetype=''):
     if 300 <= status_code < 400 or header_get(resp_headers, 'location'):
         return 'redirect'
@@ -574,6 +633,32 @@ def html_text_blocks(body: str):
         if 3 <= len(txt) <= 200:
             blocks.add(txt)
     return blocks
+
+
+def page_fingerprint(body: str) -> str:
+    """Structural skeleton hash of an HTML page: tag sequence + form field
+    names/types + <title>, with all text and attribute *values* dropped. Stable
+    across CSRF tokens / per-request values, so two renders of the same login
+    page collapse to one fingerprint."""
+    try:
+        soup = _strip_for_page(body)
+    except Exception:
+        return ''
+    tokens = []
+    title = soup.title.string if (soup.title and soup.title.string) else ''
+    if title:
+        tokens.append('title:' + " ".join(title.split()).lower())
+    for el in soup.find_all(True):
+        name = el.name
+        if name in ('input', 'select', 'textarea', 'button'):
+            tokens.append(f"{name}:{(el.get('name') or el.get('id') or '')}"
+                          f":{el.get('type') or ''}".lower())
+        elif name == 'form':
+            tokens.append('form')
+        else:
+            tokens.append(name)
+    return md5("|".join(tokens))
+
 
 
 def html_page_summary(body: str, boilerplate=None) -> str:
@@ -720,15 +805,19 @@ def structure_embed_text(node) -> str:
         parts.append("sec-missing: " + ", ".join(node['security_headers_missing']))
     if node.get('cors'):
         parts.append("cors: " + node['cors'])
+    if node.get('access_control') and node['access_control'] != 'unknown':
+        parts.append("access: " + node['access_control'])
     if node.get('page_title'):
         parts.append("title: " + node['page_title'])
     return _truncate(" | ".join(parts), EMBED_TEXT_CAP)
 
 
 def structure_summary(node) -> str:
-    anon = 'yes' if node.get('anon_allowed') else 'no'
+    access = node.get('access_control', '')
+    tail = f" · access:{access}" if access and access != 'unknown' else \
+        (" · anon:yes" if node.get('anon_allowed') else "")
     s = (f"{node['node_kind']}: {node['method']} {node['endpoint_template']} · "
-         f"{len(node['param_names'])}p · seen {node['instance_count']}× · anon:{anon}")
+         f"{len(node['param_names'])}p · seen {node['instance_count']}×{tail}")
     return _truncate(s, SUMMARY_CAP)
 
 
@@ -785,10 +874,12 @@ def attack_summary(m) -> str:
 # Behavior collapse identity (shared by the structure + behavior builders)
 # ---------------------------------------------------------------------------
 def behavior_collapse_key(a):
-    """Distinct-behavior identity. Deliberately includes status_code, auth role
-    and response schema so security-relevant variations never merge."""
+    """Distinct-behavior identity. Deliberately includes status_code, auth role,
+    response schema, and access outcome so security-relevant variations (e.g. a
+    data response vs a login-wall response to the same endpoint) never merge."""
     return (a['method'], a['endpoint_template'], a['status_code'],
-            a['req_features']['auth_role'], a.get('resp_schema_sig', ''))
+            a['req_features']['auth_role'], a.get('resp_schema_sig', ''),
+            a.get('access_class', ''))
 
 
 def behavior_id(a) -> str:

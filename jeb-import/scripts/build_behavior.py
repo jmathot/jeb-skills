@@ -54,6 +54,9 @@ def build(annotated):
             'resp_len': rep['resp_len'],
             'instance_count': instance_count,
             'time': rep['time'],
+            # access control
+            'access_class': rep.get('access_class', ''),
+            'anon_matches_auth': rep.get('anon_matches_auth', False),
             # security (compact)
             'authenticated': reqf['authenticated'],
             'auth_role': reqf['auth_role'],

@@ -29,7 +29,10 @@ the retrieval document, so nothing is lost for deep-dive and for
    are set vs consumed where, the token type, and the app-wide missing-header
    posture. Endpoints/pages/actions carry `anon_allowed`, `authenticated_ever`,
    `param_names`, `produces`, `cookies_set/sent`, `security_headers_missing`,
-   `cors`, and `example_ids` linking to behaviors.
+   `cors`, and `example_ids` linking to behaviors. `anon_allowed` is
+   **content-aware**: it is only true when an anonymous request received real
+   application data, so a "200 OK + login page" soft auth wall is classified
+   `access_control: soft-auth-wall` rather than a false broken-access-control hit.
 2. **`behavior`** — one doc per **distinct behavior**. Near-duplicate instances
    (e.g. `/products/1..500`) collapse to a representative + `instance_count`; the
    collapse key includes status, auth role, and response schema so security-

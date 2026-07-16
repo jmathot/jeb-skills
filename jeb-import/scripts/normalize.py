@@ -172,7 +172,7 @@ def pass_d_distill(annotated, boilerplate):
             a['page_title'] = distilled[6:].split(' | ', 1)[0][:120]
         # drop bulky temp fields
         for k in ('_resp_headers', '_resp_body', '_body_hash',
-                  '_is_shell_heuristic', '_html_blocks', '_req_origin'):
+                  '_is_shell_heuristic', '_html_blocks', '_req_origin', '_content_fp'):
             a.pop(k, None)
 
 
@@ -224,6 +224,82 @@ def build_auth_models(annotated):
     return models
 
 
+def _content_fp(a):
+    """A comparable content fingerprint for the anon-vs-auth differential."""
+    body = a.get('_resp_body', '')
+    rc = a['resp_class']
+    if rc == 'api_structured':
+        return d.json_schema(body)[0]
+    if rc in ('html_document', 'text_other'):
+        return d.page_fingerprint(body)
+    return ''
+
+
+def _access_class(a, login_fps):
+    """Classify what the response actually delivered (not just its status)."""
+    sc = a['status_code']
+    body = a.get('_resp_body', '')
+    rc = a['resp_class']
+    if sc in (401, 403):
+        return 'denied'
+    if rc == 'redirect':
+        loc = d.header_get(a.get('_resp_headers', {}), 'location')
+        return 'auth_wall' if d.login_redirect(loc) else 'redirect'
+    if rc == 'spa_shell':
+        return 'shell'
+    if rc == 'empty':
+        return 'empty'
+    if rc == 'static_asset':
+        return 'static'
+    if rc == 'html_document':
+        fp = d.page_fingerprint(body)
+        if (fp and fp in login_fps) or d.html_login_signals(body)['is_login']:
+            return 'auth_wall'
+        return 'data' if 200 <= sc < 300 else 'other'
+    if rc in ('api_structured', 'text_other'):
+        if d.json_auth_wall(body):
+            return 'auth_wall'
+        return 'data' if 200 <= sc < 300 else 'other'
+    return 'other'
+
+
+def pass_access(annotated):
+    """Content-aware access classification, so a '200 + login page' soft auth
+    wall is not mistaken for anonymous access (broken access control)."""
+    # Step 1: learn each host's login/auth-wall page fingerprints.
+    login_fps = defaultdict(set)
+    for a in annotated:
+        body = a.get('_resp_body', '')
+        if a['resp_class'] in ('html_document', 'spa_shell') and body:
+            if d.html_login_signals(body)['is_login'] or d.is_login_path(a['endpoint']):
+                fp = d.page_fingerprint(body)
+                if fp:
+                    login_fps[a['host']].add(fp)
+
+    # Step 2: per-item access_class + anonymous outcome flags.
+    for a in annotated:
+        a['access_class'] = _access_class(a, login_fps[a['host']])
+        a['_content_fp'] = _content_fp(a)
+        authed = a['req_features']['authenticated']
+        a['anon_data_served'] = (not authed) and a['access_class'] == 'data'
+        a['soft_denied'] = ((not authed) and a['status_code'] < 400
+                            and a['access_class'] in ('auth_wall', 'shell'))
+
+    # Step 3: differential — anon data that matches an authenticated data
+    # response is high-confidence real access.
+    groups = defaultdict(list)
+    for a in annotated:
+        groups[(a['host'], a['method'], a['endpoint_template'])].append(a)
+    for items in groups.values():
+        authed_fps = {a['_content_fp'] for a in items
+                      if a['req_features']['authenticated'] and a['access_class'] == 'data'
+                      and a['_content_fp']}
+        for a in items:
+            a['anon_matches_auth'] = bool(
+                (not a['req_features']['authenticated']) and a['access_class'] == 'data'
+                and a['_content_fp'] and a['_content_fp'] in authed_fps)
+
+
 def main():
     ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 2: normalise + annotate")
     ap.add_argument('input_file', nargs='?', default='parsed_traffic.json')
@@ -236,6 +312,7 @@ def main():
     annotated = pass_a(items)
     pass_b_spa(annotated)
     boilerplate = pass_c_boilerplate(annotated)
+    pass_access(annotated)
     pass_d_distill(annotated, boilerplate)
     auth_models = build_auth_models(annotated)
 
@@ -247,8 +324,9 @@ def main():
         json.dump({'items': annotated, 'auth_models': auth_models}, f, indent=2, default=list)
 
     shells = sum(1 for a in annotated if a['resp_class'] == 'spa_shell')
+    walls = sum(1 for a in annotated if a['access_class'] == 'auth_wall')
     print(f"Annotated {len(annotated)} items across {len(auth_models)} host(s); "
-          f"{shells} SPA-shell responses. Saved to {out}")
+          f"{shells} SPA-shell, {walls} auth-wall responses. Saved to {out}")
 
 
 if __name__ == '__main__':

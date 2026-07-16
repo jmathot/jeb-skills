@@ -37,12 +37,14 @@ SNIPPET_LEN_DEFAULT = 200
 # Facets surfaced in a result summary, per collection.
 FACETS = {
     'structure': ['node_kind', 'host', 'endpoint_template', 'method', 'param_names',
-                  'produces', 'authenticated_ever', 'anon_allowed', 'auth_mechanisms',
+                  'produces', 'authenticated_ever', 'anon_allowed', 'anon_soft_denied',
+                  'access_control', 'auth_mechanisms',
                   'cookies_sent', 'cookies_set', 'security_headers_missing', 'cors',
                   'instance_count', 'example_ids'],
     'behavior': ['method', 'host', 'endpoint_template', 'status_code', 'auth_role',
-                 'auth_mechanism', 'param_names', 'cors', 'cookie_issues',
-                 'security_headers_missing', 'redirect_location', 'instance_count'],
+                 'auth_mechanism', 'access_class', 'anon_matches_auth', 'param_names',
+                 'cors', 'cookie_issues', 'security_headers_missing', 'redirect_location',
+                 'instance_count'],
     'attacks': ['vuln_class', 'verdict', 'severity', 'host', 'endpoint_template',
                 'method', 'param', 'status_code', 'source_behavior_id'],
 }

@@ -43,7 +43,8 @@ def build_endpoint_nodes(annotated):
     for (host, method, template), items in groups.items():
         param_names, produces, statuses = set(), set(), set()
         auth_mechs, cookies_set, cookies_sent, sec_missing = set(), set(), set(), set()
-        authenticated_ever = anon_allowed = is_static = False
+        authenticated_ever = is_static = False
+        anon_data = anon_soft = anon_denied = False
         cors = ''
         page_title = ''
         example_ids = []
@@ -57,8 +58,14 @@ def build_endpoint_nodes(annotated):
                 auth_mechs.add(reqf['auth_mechanism'])
             if reqf['authenticated']:
                 authenticated_ever = True
-            if not reqf['authenticated'] and 200 <= a['status_code'] < 300:
-                anon_allowed = True
+            else:
+                # Content-aware access outcome for anonymous requests.
+                if a.get('anon_data_served'):
+                    anon_data = True
+                if a.get('soft_denied'):
+                    anon_soft = True
+                if a.get('access_class') == 'denied':
+                    anon_denied = True
             for entry in respf['set_cookies']:
                 cookies_set.add(_cookie_name(entry))
             cookies_sent.update(reqf['cookie_names'])
@@ -73,6 +80,17 @@ def build_endpoint_nodes(annotated):
             if bid not in example_ids:
                 example_ids.append(bid)
 
+        # Broken access control requires the anon request to receive real data.
+        anon_allowed = anon_data
+        if anon_data:
+            access_control = 'open-data'
+        elif anon_soft:
+            access_control = 'soft-auth-wall'
+        elif anon_denied:
+            access_control = 'enforced'
+        else:
+            access_control = 'unknown'
+
         produces = sorted(produces)
         node = {
             'host': host, 'method': method, 'endpoint_template': template,
@@ -82,6 +100,8 @@ def build_endpoint_nodes(annotated):
             'status_codes': sorted(statuses),
             'authenticated_ever': authenticated_ever,
             'anon_allowed': anon_allowed,
+            'anon_soft_denied': anon_soft,
+            'access_control': access_control,
             'auth_mechanisms': sorted(auth_mechs),
             'cookies_set': sorted(cookies_set),
             'cookies_sent': sorted(cookies_sent),
@@ -107,6 +127,8 @@ def endpoint_chunk(node):
         f"statuses: {', '.join(str(s) for s in node['status_codes'])}",
         f"auth: mechanisms={', '.join(node['auth_mechanisms']) or 'none'} "
         f"authenticated_ever={node['authenticated_ever']} anon_allowed={node['anon_allowed']}",
+        f"access-control: {node['access_control']} "
+        f"(anon_soft_denied={node['anon_soft_denied']})",
         f"cookies sent: {', '.join(node['cookies_sent']) or '-'}",
         f"cookies set: {', '.join(node['cookies_set']) or '-'}",
         f"security-headers-missing: {', '.join(node['security_headers_missing']) or '-'}",
@@ -124,6 +146,8 @@ def endpoint_chunk(node):
         'status_codes': _csv(node['status_codes']),
         'authenticated_ever': node['authenticated_ever'],
         'anon_allowed': node['anon_allowed'],
+        'anon_soft_denied': node['anon_soft_denied'],
+        'access_control': node['access_control'],
         'auth_mechanisms': _csv(node['auth_mechanisms']),
         'cookies_sent': _csv(node['cookies_sent']),
         'cookies_set': _csv(node['cookies_set']),
@@ -167,6 +191,8 @@ def auth_model_chunk(host, model):
         'status_codes': '',
         'authenticated_ever': bool(model.get('auth_mechanisms')),
         'anon_allowed': False,
+        'anon_soft_denied': False,
+        'access_control': 'unknown',
         'auth_mechanisms': _csv(model.get('auth_mechanisms', [])),
         'cookies_sent': _csv(sorted(sent_map.keys())),
         'cookies_set': _csv(sorted(set_map.keys())),
