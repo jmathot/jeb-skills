@@ -18,6 +18,7 @@ import base64
 import hashlib
 import json
 import re
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse, parse_qs
 
 from bs4 import BeautifulSoup
@@ -612,6 +613,48 @@ def json_schema(body: str):
     return sig, _truncate(" | ".join(bits), 800)
 
 
+def xml_schema(body: str):
+    """Return a bounded element-path schema and useful leaf text for XML."""
+    try:
+        root = ET.fromstring(body)
+    except Exception:
+        return '', _truncate(body, 200)
+
+    paths, samples = [], []
+
+    def local_name(tag):
+        return str(tag).rsplit('}', 1)[-1]
+
+    def walk(element, prefix='', depth=1):
+        if len(paths) >= SCHEMA_NODE_CAP or depth > SCHEMA_DEPTH_CAP:
+            return
+        name = local_name(element.tag)
+        path = f"{prefix}.{name}" if prefix else name
+        paths.append(path)
+        for attr in sorted(element.attrib)[:10]:
+            paths.append(f"{path}.@{local_name(attr)}")
+        text = (element.text or '').strip()
+        if text and len(samples) < SAMPLE_SCALAR_CAP:
+            samples.append(f"{name}={_truncate(text, 60)}")
+        for child in list(element):
+            walk(child, path, depth + 1)
+
+    walk(root)
+    uniq_paths = sorted(dict.fromkeys(paths))
+    bits = []
+    if uniq_paths:
+        bits.append("elements: " + ", ".join(uniq_paths[:SCHEMA_KEY_CAP]))
+    if samples:
+        bits.append("sample: " + ", ".join(samples))
+    return md5("|".join(uniq_paths)), _truncate(" | ".join(bits), 800)
+
+
+def structured_schema(body: str, content_type=''):
+    if 'xml' in (content_type or '').lower() or body.lstrip().startswith('<?xml'):
+        return xml_schema(body)
+    return json_schema(body)
+
+
 # ---- HTML distillation + boilerplate -------------------------------------
 _CHROME_TAGS = ('nav', 'header', 'footer', 'aside')
 
@@ -728,7 +771,7 @@ def html_page_summary(body: str, boilerplate=None) -> str:
 def distill_response(resp_class, body, resp_ct, redirect_location, boilerplate=None):
     """Route a response to the right distiller. Returns (distilled_str, schema_sig)."""
     if resp_class == 'api_structured':
-        sig, summary = json_schema(body)
+        sig, summary = structured_schema(body, resp_ct)
         return summary, sig
     if resp_class == 'html_document':
         return html_page_summary(body, boilerplate), ''
@@ -778,6 +821,37 @@ def behavior_embed_text(a) -> str:
     return _truncate(" | ".join(parts), EMBED_TEXT_CAP)
 
 
+def behavior_segment_texts(a):
+    """Protocol-aware child representations used by hybrid retrieval."""
+    reqf, respf = a['req_features'], a['resp_features']
+    route = [f"request route {a['method']} {path_words(a['endpoint_template'])}",
+             a['endpoint_template'], f"host: {a['host']}"]
+    if a['param_names']:
+        route.append("parameters: " + ", ".join(a['param_names']))
+    if a['req_content_type']:
+        route.append("request content: " + a['req_content_type'])
+
+    response = [f"response for {a['method']} {a['endpoint_template']}",
+                f"status: {a['status_code']} {status_class(a['status_code'])}",
+                f"type: {a['resp_content_type'] or a['resp_class']}"]
+    if a['resp_distilled']:
+        response.append(a['resp_distilled'])
+    if a.get('access_class'):
+        response.append("access outcome: " + a['access_class'])
+
+    security = [f"access and session behavior on {a['method']} {a['endpoint_template']}",
+                "auth role: " + (reqf.get('auth_role') or 'anonymous'),
+                "auth mechanism: " + (reqf.get('auth_mechanism') or 'none')]
+    security.extend(_security_clause(reqf, respf))
+    if a.get('anon_matches_auth'):
+        security.append("anonymous response matches authenticated response")
+    return {
+        'route': _truncate(" | ".join(route), EMBED_TEXT_CAP),
+        'response': _truncate(" | ".join(response), EMBED_TEXT_CAP),
+        'security': _truncate(" | ".join(security), EMBED_TEXT_CAP),
+    }
+
+
 def behavior_summary(a) -> str:
     reqf = a['req_features']
     ptop = ",".join(a['param_names'][:3])
@@ -810,6 +884,35 @@ def structure_embed_text(node) -> str:
     if node.get('page_title'):
         parts.append("title: " + node['page_title'])
     return _truncate(" | ".join(parts), EMBED_TEXT_CAP)
+
+
+def structure_segment_texts(node):
+    identity = [f"{node['node_kind']} route {node['method']} "
+                f"{path_words(node['endpoint_template'])}",
+                node['endpoint_template'], f"host: {node['host']}"]
+    if node['param_names']:
+        identity.append("parameters: " + ", ".join(node['param_names']))
+    if node.get('produces'):
+        identity.append("produces: " + ", ".join(node['produces']))
+
+    posture = [f"access posture for {node['method']} {node['endpoint_template']}"]
+    if node.get('status_codes'):
+        posture.append("statuses: " + ", ".join(str(s) for s in node['status_codes']))
+    if node.get('access_control'):
+        posture.append("access: " + node['access_control'])
+    if node.get('auth_mechanisms'):
+        posture.append("authentication: " + ", ".join(node['auth_mechanisms']))
+    if node.get('cookies_set'):
+        posture.append("sets cookies: " + ", ".join(node['cookies_set']))
+    if node.get('security_headers_missing'):
+        posture.append("security headers missing: " +
+                       ", ".join(node['security_headers_missing']))
+    if node.get('cors'):
+        posture.append("cors: " + node['cors'])
+    return {
+        'identity': _truncate(" | ".join(identity), EMBED_TEXT_CAP),
+        'posture': _truncate(" | ".join(posture), EMBED_TEXT_CAP),
+    }
 
 
 def structure_summary(node) -> str:
@@ -877,7 +980,8 @@ def behavior_collapse_key(a):
     """Distinct-behavior identity. Deliberately includes status_code, auth role,
     response schema, and access outcome so security-relevant variations (e.g. a
     data response vs a login-wall response to the same endpoint) never merge."""
-    return (a['method'], a['endpoint_template'], a['status_code'],
+    return (a.get('scheme', ''), a['host'], a.get('port', 0), a['method'],
+            a['endpoint_template'], a['status_code'],
             a['req_features']['auth_role'], a.get('resp_schema_sig', ''),
             a.get('access_class', ''))
 

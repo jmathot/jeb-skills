@@ -36,11 +36,11 @@ def build_endpoint_nodes(annotated):
     groups = OrderedDict()
     for a in annotated:
         template = '{spa-shell}' if a['resp_class'] == 'spa_shell' else a['endpoint_template']
-        key = (a['host'], a['method'], template)
+        key = (a['scheme'], a['host'], a['port'], a['method'], template)
         groups.setdefault(key, []).append(a)
 
     nodes = []
-    for (host, method, template), items in groups.items():
+    for (scheme, host, port, method, template), items in groups.items():
         param_names, produces, statuses = set(), set(), set()
         auth_mechs, cookies_set, cookies_sent, sec_missing = set(), set(), set(), set()
         authenticated_ever = is_static = False
@@ -93,7 +93,8 @@ def build_endpoint_nodes(annotated):
 
         produces = sorted(produces)
         node = {
-            'host': host, 'method': method, 'endpoint_template': template,
+            'scheme': scheme, 'host': host, 'port': port, 'method': method,
+            'endpoint_template': template,
             'node_kind': _node_kind(template, method, produces),
             'param_names': sorted(param_names),
             'produces': produces,
@@ -121,7 +122,8 @@ def endpoint_chunk(node):
     embed_text = d.structure_embed_text(node)
     summary = d.structure_summary(node)
     pc = [
-        f"{node['node_kind'].upper()}  {node['method']} {node['endpoint_template']}  @ {node['host']}",
+        f"{node['node_kind'].upper()}  {node['method']} {node['endpoint_template']}  "
+        f"@ {node['scheme']}://{node['host']}:{node['port']}",
         f"params: {', '.join(node['param_names'])}",
         f"produces: {', '.join(node['produces'])}",
         f"statuses: {', '.join(str(s) for s in node['status_codes'])}",
@@ -137,7 +139,9 @@ def endpoint_chunk(node):
     ]
     metadata = {
         'doc_kind': 'structure',
+        'scheme': node['scheme'],
         'host': node['host'],
+        'port': node['port'],
         'endpoint_template': node['endpoint_template'],
         'method': node['method'],
         'node_kind': node['node_kind'],
@@ -159,18 +163,22 @@ def endpoint_chunk(node):
         'example_ids': _csv(node['example_ids']),
         'summary': summary,
     }
-    node_id = d.md5(f"{node['host']}|{node['method']}|{node['endpoint_template']}|{node['node_kind']}")
+    node_id = d.md5(f"{node['scheme']}|{node['host']}|{node['port']}|"
+                    f"{node['method']}|{node['endpoint_template']}|{node['node_kind']}")
     return {'id': node_id, 'embed_text': embed_text,
             'page_content': "\n".join(pc), 'metadata': metadata}
 
 
-def auth_model_chunk(host, model):
-    embed_text = d.auth_model_embed_text(host, model)
-    summary = d.auth_model_summary(host, model)
+def auth_model_chunk(origin, model):
+    embed_text = d.auth_model_embed_text(origin, model)
+    summary = d.auth_model_summary(origin, model)
+    scheme = model.get('scheme', '')
+    host = model.get('host', origin)
+    port = model.get('port', 0)
     set_map = model.get('cookies_set_map', {})
     sent_map = model.get('cookies_sent_map', {})
     pc = [
-        f"AUTH MODEL  @ {host}",
+        f"AUTH MODEL  @ {origin}",
         f"mechanisms: {', '.join(model.get('auth_mechanisms', [])) or 'none'}",
         f"token: {model.get('token', '') or '-'}",
         "cookies set:",
@@ -182,7 +190,9 @@ def auth_model_chunk(host, model):
     ]
     metadata = {
         'doc_kind': 'structure',
+        'scheme': scheme,
         'host': host,
+        'port': port,
         'endpoint_template': '{auth-model}',
         'method': '',
         'node_kind': 'auth_model',
@@ -204,15 +214,42 @@ def auth_model_chunk(host, model):
         'example_ids': '',
         'summary': summary,
     }
-    node_id = d.md5(f"{host}|auth_model")
+    node_id = d.md5(f"{origin}|auth_model")
     return {'id': node_id, 'embed_text': embed_text,
             'page_content': "\n".join(pc), 'metadata': metadata}
+
+
+def build_segments(nodes, auth_models):
+    chunks = []
+    for node in nodes:
+        parent = endpoint_chunk(node)
+        for representation, text in d.structure_segment_texts(node).items():
+            metadata = dict(parent['metadata'])
+            metadata.update({'parent_id': parent['id'], 'representation': representation})
+            chunks.append({
+                'id': d.md5(f"{parent['id']}|{representation}"),
+                'embed_text': text,
+                'page_content': text,
+                'metadata': metadata,
+            })
+    for origin, model in auth_models.items():
+        parent = auth_model_chunk(origin, model)
+        metadata = dict(parent['metadata'])
+        metadata.update({'parent_id': parent['id'], 'representation': 'auth_model'})
+        chunks.append({
+            'id': d.md5(f"{parent['id']}|auth_model"),
+            'embed_text': parent['embed_text'],
+            'page_content': parent['embed_text'],
+            'metadata': metadata,
+        })
+    return chunks
 
 
 def main():
     ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 3b: build structure docs")
     ap.add_argument('input_file', nargs='?', default='annotated_traffic.json')
     ap.add_argument('-o', '--output', default='structure_chunks.json')
+    ap.add_argument('--segments-output')
     args = ap.parse_args()
 
     with open(args.input_file) as f:
@@ -220,14 +257,21 @@ def main():
     annotated = data['items']
     auth_models = data.get('auth_models', {})
 
-    chunks = [endpoint_chunk(n) for n in build_endpoint_nodes(annotated)]
-    for host, model in auth_models.items():
-        chunks.append(auth_model_chunk(host, model))
+    nodes = build_endpoint_nodes(annotated)
+    chunks = [endpoint_chunk(n) for n in nodes]
+    for origin, model in auth_models.items():
+        chunks.append(auth_model_chunk(origin, model))
 
     with open(args.output, 'w') as f:
         json.dump(chunks, f, indent=2)
     print(f"Built {len(chunks)} structure docs "
           f"({len(auth_models)} auth-model node(s)). Saved to {args.output}")
+    if args.segments_output:
+        segments = build_segments(nodes, auth_models)
+        with open(args.segments_output, 'w') as f:
+            json.dump(segments, f, indent=2)
+        print(f"Built {len(segments)} structure semantic segments. "
+              f"Saved to {args.segments_output}")
 
 
 if __name__ == '__main__':

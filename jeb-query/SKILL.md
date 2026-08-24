@@ -3,7 +3,7 @@ name: jeb-query
 description: Query step for J.E.B. — hunt for vulnerabilities across a Burp capture mapped into three ChromaDB collections (structure, behavior, attacks). USE WHEN searching/querying an already-imported Burp database, hunting vulns, mapping the site/endpoints, semantic search over request/response behavior, filtering by metadata or raw header/cookie substrings, recording attack results, or deep-diving a specific doc by id. To first parse and embed a Burp XML export, use the jeb-import skill.
 ---
 
-# J.E.B. — Query / Hunting Interface (v2)
+# J.E.B. — Query / Hunting Interface (v3)
 
 This skill queries a ChromaDB populated by the **`jeb-import`** skill. If the
 database does not exist yet, run `jeb-import` first.
@@ -20,22 +20,50 @@ from the project directory so `./chroma_db` resolves to that project's DB, or pa
 ## The three collections (`--collection`)
 
 - **`structure`** — the site map: endpoint templates, pages, actions, and one
-  per-host `auth_model` node. Start here to understand the app and to find
+  per-origin `auth_model` node. Start here to understand the app and to find
   broken-access-control candidates.
 - **`behavior`** (default) — one doc per distinct request/response behavior.
 - **`attacks`** — results of your active testing, written by `record-attack`.
 
 ## How search works
 
-The vector is a distilled, value-suppressed summary of each doc; the stored
-document is the **raw HTTP** (behavior/attacks) or a readable node report
-(structure). So:
-- semantic `--query` matches concepts (incl. a security clause: cookies, missing
-  headers, CORS, cross-site origin, JWT alg),
+Canonical documents retain **raw HTTP** (behavior/attacks) or a readable node
+report (structure). Search uses protocol-aware semantic child vectors plus a
+project-local SQLite FTS5 index, fuses them with reciprocal-rank fusion, and then
+applies filtering, score thresholds, endpoint diversity, and cumulative relevance
+selection. So:
+- semantic `--query` independently matches route, response, and access concepts,
+- lexical retrieval recovers exact endpoints, parameters, and protocol terms,
 - `--where` filters metadata facets (equality / `$in` / numeric ranges),
 - `--where-document` substring-matches the **raw** headers/cookies/body.
 
-Every result includes a `distance` (lower = closer) and a `summary` snippet.
+Every result includes normalized fused `score` (higher = better), contributing
+`sources`, semantic `representations`, cosine `distance` when a dense candidate
+contributed, and a `summary` snippet.
+
+### Retrieval controls
+
+- `--candidate-k 40`: candidates requested from each retrieval path.
+- `--top-k 8` (alias `--n-results`): hard maximum returned results.
+- `--max-distance`: maximum dense cosine distance. Defaults are collection-specific.
+- `--min-score 0.0`: minimum normalized fused relevance score from 0 to 1.
+- `--top-p 0.90`: return the smallest ranked prefix covering 90% of available
+  relevance mass, after `--min-results` is satisfied. This is deterministic
+  retrieval selection, not an LLM generation sampling parameter.
+- `--min-results 3`: minimum result floor before `top_p` can stop selection.
+- `--max-per-endpoint 2`: diversity limit per `(host, endpoint_template)`.
+
+Precision-oriented example:
+```bash
+"$PY" "$AGENT" --db-path ./chroma_db --query "password reset token" \
+  --candidate-k 30 --top-k 5 --top-p 0.80 --min-score 0.35
+```
+
+Exploratory example:
+```bash
+"$PY" "$AGENT" --db-path ./chroma_db --query "authorization behavior" \
+  --candidate-k 100 --top-k 20 --top-p 0.98 --max-per-endpoint 3
+```
 
 ---
 
@@ -45,7 +73,7 @@ Every result includes a `distance` (lower = closer) and a `summary` snippet.
 "$PY" "$AGENT" --db-path ./chroma_db --collection structure \
   --query "authentication and account management"
 ```
-Read the per-host **auth model** node (`--where '{"node_kind":"auth_model"}'`) to
+Read the per-origin **auth model** node (`--where '{"node_kind":"auth_model"}'`) to
 see which cookies are set vs consumed where, the token type, and the app-wide
 missing-header posture.
 
@@ -70,7 +98,7 @@ response matched the authenticated response byte-for-structure.
 ### `structure` filterable fields
 - `doc_kind` (str): always `structure`
 - `node_kind` (str): `page` | `endpoint` | `action` | `auth_model`
-- `host`, `endpoint_template`, `method` (str)
+- `scheme`, `host`, `endpoint_template`, `method` (str), `port` (int)
 - `param_names` (str, csv), `produces` (str, csv content types)
 - `status_codes` (str, csv), `path_depth` (int), `instance_count` (int)
 - `authenticated_ever` (bool), `anon_allowed` (bool — anon received real data)
@@ -112,7 +140,7 @@ Use `{"is_static": false}` to drop js/css/image noise.
 
 ### `behavior` filterable fields
 - `doc_kind` (str): always `behavior`
-- `host`, `endpoint_template`, `method` (str)
+- `scheme`, `host`, `endpoint_template`, `method` (str), `port` (int)
 - `status_code` (int, ranges), `resp_len` (int, ranges)
 - `param_names` (str, csv), `param_count` (int)
 - `req_content_type`, `resp_content_type` (str)
@@ -146,7 +174,7 @@ Returns the full metadata and the raw request/response (or the node report for
 ```bash
 "$PY" "$AGENT" --db-path ./chroma_db --similar-to <document_id> --n-results 10
 ```
-Nearest neighbours by stored vector — the "more like this" pivot. Honours
+Nearest neighbours by the canonical stored vector — the "more like this" pivot. Honours
 `--where`, `--where-document`, `--n-results`.
 
 ## 5. Record an attack result (`--record-attack`)

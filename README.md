@@ -6,13 +6,16 @@ for mapping a web app and hunting vulnerabilities.
 
 ## Features
 
-- **Three collections**
-  - `structure` — site map: one node per `(host, method, endpoint_template)`
-    with ids normalised (`/products/{id}`), plus a per-host `auth_model` node
+- **Canonical and semantic collections**
+  - `structure` — site map: one node per `(scheme, host, port, method, endpoint_template)`
+    with ids normalised (`/products/{id}`), plus a per-origin `auth_model` node
     showing which cookies are set vs consumed where.
   - `behavior` — one doc per distinct request/response; near-duplicates collapse
     to a representative with an `instance_count`.
   - `attacks` — results of active testing, logged while hunting.
+  - `structure_segments` / `behavior_segments` — protocol-aware child vectors
+    for route, response, and access/session retrieval. Results resolve back to
+    canonical structure or behavior IDs.
 - **Distilled embeddings** — vectors are built from a compact, value-suppressed
   summary (method, templated path, parameter names, response schema, security
   features). Raw HTTP is stored for deep-dive and substring search, so repeated
@@ -23,8 +26,11 @@ for mapping a web app and hunting vulnerabilities.
   separates it from "200 OK login page" soft auth walls.
 - **Response-aware** — handles JSON APIs, server-rendered pages (shared
   boilerplate removed), and SPA shells.
-- **Filtering** — semantic query, metadata filters, and `--where-document`
-  substring search over raw headers/cookies.
+- **Hybrid retrieval** — semantic child search plus SQLite FTS5 lexical search,
+  reciprocal-rank fusion, endpoint diversity, score/distance thresholds,
+  `top_k`, and cumulative retrieval `top_p` selection.
+- **Filtering** — metadata filters and `--where-document` substring search over
+  canonical raw headers/cookies are applied before final result selection.
 - **Visualization** — interactive HTML map of the vector space with diagnostics.
 
 ## Requirements
@@ -45,6 +51,10 @@ for mapping a web app and hunting vulnerabilities.
 
 Writes intermediate JSON and a `chroma_db/` into the project directory.
 
+The current schema uses explicit cosine distance and semantic child collections.
+Delete an older project's `chroma_db/` before its first import with this version.
+Re-imports under the current schema only re-embed documents whose content changed.
+
 ## Query
 
     PY=~/.config/opencode/skill/jeb-import/scripts/venv/bin/python
@@ -56,7 +66,8 @@ Writes intermediate JSON and a `chroma_db/` into the project directory.
 
     # Semantic behavior search + metadata filter
     "$PY" "$AGENT" --db-path ./chroma_db --query "server error" \
-      --where '{"status_code": {"$gte": 500}}'
+      --where '{"status_code": {"$gte": 500}}' \
+      --candidate-k 40 --top-k 8 --top-p 0.90
 
     # Substring search over raw headers/cookies
     "$PY" "$AGENT" --db-path ./chroma_db --query "cross origin" \
@@ -71,10 +82,27 @@ Writes intermediate JSON and a `chroma_db/` into the project directory.
 
 See the `jeb-query` skill for the full filterable-field reference.
 
+Retrieval controls:
+
+- `--candidate-k`: candidates requested from dense and lexical retrieval.
+- `--top-k` / `--n-results`: hard maximum final result count.
+- `--max-distance`: maximum dense cosine distance; collection defaults apply.
+- `--min-score`: minimum normalized fused relevance score from 0 to 1.
+- `--top-p`: smallest result prefix covering this cumulative relevance mass;
+  this is deterministic retrieval selection, not LLM token sampling.
+- `--min-results`: result floor before `top_p` can stop selection.
+- `--max-per-endpoint`: diversity cap for repeated host/endpoint results.
+
 ## Visualize
 
     ~/.config/opencode/skill/jeb-import/scripts/venv/bin/pip install \
       -r ~/.config/opencode/skill/jeb-import/scripts/requirements-viz.txt
     ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
       ~/.config/opencode/skill/jeb-import/scripts/visualize.py \
-      --db-path ./chroma_db --collection all --out vector_space.html
+      --db-path ./chroma_db --collection all --color-by collection \
+      --out vector_space.html
+
+The v3 visualizer includes canonical and semantic segment collections, collection
+schema/metric reporting, representation coverage, orphan detection, parent-child
+cosine-distance analysis, and cluster diagnostics. Use `--collection canonical`
+or `--collection segments` for focused views.

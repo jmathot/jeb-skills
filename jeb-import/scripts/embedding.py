@@ -7,7 +7,7 @@ Single source of truth for:
   * a schema stamp so a database advertises which embedding scheme built it.
 
 embeddinggemma is trained with *paired* task prompts: documents and queries
-must both be prefixed for the vectors to land in a shared space. v2 embeds the
+must both be prefixed for the vectors to land in a shared space. v3 embeds the
 distilled `embed_text` of every doc with the document prompt and embeds queries
 with a single retrieval prompt (the three collections — structure, behavior,
 attacks — are all distilled security text, so one prompt fits all).
@@ -23,7 +23,9 @@ from chromadb.utils import embedding_functions
 
 # Bump this string whenever the prompt scheme changes so stale databases embedded
 # under an older scheme can be detected (and either handled or rebuilt).
-EMBEDDING_SCHEME = "embeddinggemma-v2-distilled"
+EMBEDDING_SCHEME = "embeddinggemma-v3-semantic-segments"
+COLLECTION_SCHEMA = "jeb-v3"
+DISTANCE_METRIC = "cosine"
 
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
 OLLAMA_MODEL = "embeddinggemma:latest"
@@ -46,7 +48,7 @@ def doc_prefix(text: str) -> str:
 def query_prefix_search(text: str) -> str:
     """Query prompt. v2 embeds three homogeneous collections (structure /
     behavior / attacks) of distilled security text, so a single retrieval
-    prompt is used for all of them."""
+   prompt is used for all of them."""
     return f"task: search result | query: {text}"
 
 

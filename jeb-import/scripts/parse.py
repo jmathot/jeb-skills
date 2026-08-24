@@ -7,7 +7,7 @@ Differences from the v1 `ingest.py`:
     because headers are never embedded in v2 — they live in the retrieval
     document and power `--where-document` substring filtering. Fidelity here is
     what makes cookie/header attack analysis possible.
-  * Deduplicates identical requests by (method, normalized_url, body_hash).
+  * Deduplicates identical requests by method, URL, body, and credential context.
 
 Output: parsed_<name>.json — a list of items:
   {url, method, status, mimetype, responselength, time,
@@ -30,6 +30,20 @@ MAX_STORED_BODY = 16000
 
 BINARY_CT = ('image/', 'application/pdf', 'audio/', 'video/',
              'application/octet-stream', 'font/')
+AUTH_COOKIE_NAMES = {
+    'session', 'sessionid', 'session_id', 'sid', 'jsessionid', 'phpsessid',
+    'asp.net_sessionid', 'connect.sid', 'laravel_session', 'ci_session',
+    'token', 'auth', 'auth_token', 'access_token', 'accesstoken', 'jwt',
+    'id_token', 'remember_token', 'oauth_token', 'apikey', 'api_key',
+}
+AUTH_HEADERS = {
+    'authorization', 'proxy-authorization', 'x-api-key', 'api-key',
+    'x-auth-token', 'x-access-token', 'x-session-token', 'loginid',
+    'authentication', 'currentrole',
+}
+AUTH_HEADER_SIGNALS = (
+    'auth', 'login', 'token', 'session', 'api-key', 'apikey', 'credential',
+)
 
 
 def should_keep_header(name: str) -> bool:
@@ -78,6 +92,84 @@ def normalize_url(url: str) -> str:
     return urlunparse((p.scheme, p.netloc, p.path, p.params, query, p.fragment))
 
 
+def auth_context_signature(headers: dict) -> str:
+    """Keep distinct credential contexts without persisting another secret copy."""
+    auth_parts = []
+    for name, value in headers.items():
+        lower = name.lower()
+        if lower == 'cookie':
+            for part in str(value).split(';'):
+                if '=' not in part:
+                    continue
+                cookie_name, cookie_value = part.split('=', 1)
+                cookie_name = cookie_name.strip().lower()
+                looks_jwt = (cookie_value.strip().count('.') == 2 and
+                             cookie_value.strip().startswith('eyJ'))
+                if cookie_name in AUTH_COOKIE_NAMES or looks_jwt or any(
+                        marker in cookie_name for marker in ('session', 'auth', 'token', 'jwt')):
+                    digest = hashlib.sha256(
+                        cookie_value.strip().encode('utf-8')).hexdigest()[:16]
+                    auth_parts.append(f"cookie:{cookie_name}:{digest}")
+        elif lower in AUTH_HEADERS or any(marker in lower
+                                          for marker in AUTH_HEADER_SIGNALS):
+            digest = hashlib.sha256(str(value).encode('utf-8')).hexdigest()[:16]
+            auth_parts.append(f"{lower}:{digest}")
+    return "|".join(sorted(auth_parts))
+
+
+def structured_json_preview(body: str) -> str:
+    """Keep large JSON valid and structurally useful for later distillation."""
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        return ''
+
+    budget = {'nodes': 0}
+
+    def prune(value, depth=0):
+        budget['nodes'] += 1
+        if budget['nodes'] > 300 or depth > 5:
+            return '<OMITTED>'
+        if isinstance(value, dict):
+            return {str(k): prune(v, depth + 1)
+                    for k, v in list(value.items())[:60]}
+        if isinstance(value, list):
+            return [prune(v, depth + 1) for v in value[:3]]
+        if isinstance(value, str):
+            return value[:200]
+        return value
+
+    preview = json.dumps(prune(parsed), ensure_ascii=True, separators=(',', ':'))
+    return preview if len(preview) <= MAX_STORED_BODY else ''
+
+
+def structured_xml_preview(body: str) -> str:
+    """Keep a bounded, valid XML tree for later element-path distillation."""
+    try:
+        root = ET.fromstring(body)
+    except Exception:
+        return ''
+
+    budget = {'nodes': 0}
+
+    def prune(element, depth=0):
+        budget['nodes'] += 1
+        element.text = (element.text or '')[:200]
+        element.tail = None
+        for key in list(element.attrib)[20:]:
+            del element.attrib[key]
+        children = list(element)
+        for child in children:
+            if budget['nodes'] >= 300 or depth >= 5:
+                element.remove(child)
+            else:
+                prune(child, depth + 1)
+
+    prune(root)
+    preview = ET.tostring(root, encoding='unicode')
+    return preview if len(preview) <= MAX_STORED_BODY else ''
+
+
 def process_item(item, seen):
     url = item.findtext('url', '')
     method = item.findtext('method', '')
@@ -105,7 +197,9 @@ def process_item(item, seen):
 
     # Dedup identical requests.
     body_hash = hashlib.md5(req_body_str.encode('utf-8')).hexdigest() if req_body_str else ''
-    sig = (method, normalize_url(url), body_hash)
+    request_headers = result.get('request', {}).get('headers', {})
+    sig = (method, normalize_url(url), body_hash,
+           auth_context_signature(request_headers))
     if sig in seen:
         return None
     seen.add(sig)
@@ -127,7 +221,11 @@ def process_item(item, seen):
             else:
                 body_str = parsed['body'].decode('utf-8', errors='ignore')
                 if len(body_str) > MAX_STORED_BODY:
-                    body_str = body_str[:MAX_STORED_BODY] + '\n<TRUNCATED>'
+                    preview = (structured_xml_preview(body_str)
+                               if 'xml' in ct or body_str.lstrip().startswith('<?xml')
+                               else structured_json_preview(body_str))
+                    body_str = (preview if preview else
+                                body_str[:MAX_STORED_BODY] + '\n<TRUNCATED>')
                     truncated = True
             result['response'] = {'line': parsed['line'],
                                   'headers': parsed['headers'],

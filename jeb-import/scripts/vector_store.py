@@ -8,8 +8,10 @@ keeps headers/cookies out of the vectors while leaving them fully available for
 deep-dive and `--where-document` substring filtering.
 """
 import argparse
+import hashlib
 import json
 import os
+import sqlite3
 import time
 
 import chromadb
@@ -17,7 +19,8 @@ import chromadb
 os.environ.setdefault('OLLAMA_TIMEOUT', '3600')
 os.environ.setdefault('HTTPX_TIMEOUT', '3600')
 
-from embedding import EMBEDDING_SCHEME, make_ollama_ef, embed_documents
+from embedding import (COLLECTION_SCHEMA, DISTANCE_METRIC, EMBEDDING_SCHEME,
+                       make_ollama_ef, embed_documents)
 
 MAX_BATCH_CHARS = 10000
 
@@ -44,6 +47,36 @@ def serialize_meta(meta):
     return out
 
 
+def content_hash(chunk, metadata):
+    material = json.dumps({
+        'embed_text': chunk['embed_text'],
+        'page_content': chunk['page_content'],
+        'metadata': metadata,
+    }, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(material.encode('utf-8')).hexdigest()
+
+
+def update_lexical_index(db_path, collection_name, chunks):
+    """Mirror distilled text into a dependency-free SQLite FTS5 index."""
+    path = os.path.join(db_path, 'jeb_lexical.sqlite')
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts USING fts5("
+            "doc_id UNINDEXED, collection_name UNINDEXED, parent_id UNINDEXED, text)"
+        )
+        for chunk in chunks:
+            parent_id = chunk.get('metadata', {}).get('parent_id', chunk['id'])
+            conn.execute(
+                "DELETE FROM retrieval_fts WHERE doc_id = ? AND collection_name = ?",
+                (chunk['id'], collection_name),
+            )
+            conn.execute(
+                "INSERT INTO retrieval_fts(doc_id, collection_name, parent_id, text) "
+                "VALUES (?, ?, ?, ?)",
+                (chunk['id'], collection_name, parent_id, chunk['embed_text']),
+            )
+
+
 def upsert_with_retry(collection, documents, embeddings, metadatas, ids, max_retries=5):
     for attempt in range(max_retries):
         try:
@@ -64,15 +97,25 @@ def store(collection, chunks, ollama_ef):
         print("No chunks to store.")
         return 0
 
-    existing = set()
+    existing = {}
     try:
-        existing = set(collection.get(include=[])['ids'])
+        got = collection.get(include=['metadatas'])
+        existing = {doc_id: (meta or {}).get('_content_hash', '')
+                    for doc_id, meta in zip(got['ids'], got['metadatas'])}
         if existing:
-            print(f"Found {len(existing)} already-embedded docs, skipping those.")
+            print(f"Found {len(existing)} existing docs; changed content will be refreshed.")
     except Exception as e:
         print(f"Warning: could not read existing ids: {e}")
 
-    pending = [c for c in chunks if c['id'] not in existing]
+    pending = []
+    for chunk in chunks:
+        metadata = serialize_meta(chunk['metadata'])
+        digest = content_hash(chunk, metadata)
+        if existing.get(chunk['id']) == digest:
+            continue
+        prepared = dict(chunk)
+        prepared['metadata'] = dict(metadata, _content_hash=digest)
+        pending.append(prepared)
     if not pending:
         print(f"All {len(chunks)} chunks already embedded.")
         return 0
@@ -92,7 +135,7 @@ def store(collection, chunks, ollama_ef):
             idx += 1
         embed_texts = [c['embed_text'] for c in batch]
         documents = [c['page_content'] for c in batch]
-        metadatas = [serialize_meta(c['metadata']) for c in batch]
+        metadatas = [c['metadata'] for c in batch]
         ids = [c['id'] for c in batch]
         embeddings = embed_documents(ollama_ef, embed_texts)
         upsert_with_retry(collection, documents, embeddings, metadatas, ids)
@@ -107,7 +150,7 @@ def store(collection, chunks, ollama_ef):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 4: vector storage")
+    ap = argparse.ArgumentParser(description="J.E.B. v3 Phase 4: vector storage")
     ap.add_argument('input_file')
     ap.add_argument('--db-path', default=None)
     ap.add_argument('--collection', required=True,
@@ -124,12 +167,29 @@ def main():
 
     ollama_ef = make_ollama_ef()
     client = chromadb.PersistentClient(path=db_path)
-    collection = client.get_or_create_collection(
-        name=args.collection,
-        embedding_function=ollama_ef,
-        metadata={"embedding_scheme": EMBEDDING_SCHEME},
-    )
+    collection_meta = {"embedding_scheme": EMBEDDING_SCHEME,
+                       "collection_schema": COLLECTION_SCHEMA,
+                       "hnsw:space": DISTANCE_METRIC}
+    existing_names = {c.name for c in client.list_collections()}
+    if args.collection in existing_names:
+        collection = client.get_collection(args.collection,
+                                           embedding_function=ollama_ef)
+        meta = collection.metadata or {}
+        if meta.get('embedding_scheme') != EMBEDDING_SCHEME or \
+                meta.get('hnsw:space') != DISTANCE_METRIC:
+            raise SystemExit(
+                f"Collection '{args.collection}' uses an incompatible embedding "
+                f"scheme or distance metric. Rebuild this project's chroma_db "
+                f"before importing with {COLLECTION_SCHEMA}.")
+    else:
+        collection = client.create_collection(
+            name=args.collection,
+            embedding_function=ollama_ef,
+            metadata=collection_meta,
+        )
     total = store(collection, chunks, ollama_ef)
+    update_lexical_index(db_path, args.collection, chunks)
+    print(f"Updated lexical index for {len(chunks)} documents.")
     print(f"\n✓ Stored {total} documents in collection '{args.collection}'."
           if total else "Nothing new to store.")
 

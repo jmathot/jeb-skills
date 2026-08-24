@@ -19,6 +19,17 @@ def _csv(v):
     return ",".join(v) if isinstance(v, (list, tuple)) else (v or "")
 
 
+def _representative(items):
+    """Choose the response nearest the group's median size, then the richest."""
+    lengths = sorted(i.get('resp_len', 0) for i in items)
+    median = lengths[len(lengths) // 2]
+    return min(items, key=lambda i: (
+        abs(i.get('resp_len', 0) - median),
+        -len(i.get('resp_distilled', '')),
+        -len(i.get('raw', '')),
+    ))
+
+
 def build(annotated):
     groups = OrderedDict()
     for a in annotated:
@@ -27,7 +38,7 @@ def build(annotated):
 
     chunks = []
     for key, items in groups.items():
-        rep = items[0]
+        rep = _representative(items)
         reqf, respf = rep['req_features'], rep['resp_features']
         example_urls = list(OrderedDict.fromkeys(i['url'] for i in items))[:5]
         instance_count = len(items)
@@ -42,7 +53,9 @@ def build(annotated):
 
         metadata = {
             'doc_kind': 'behavior',
+            'scheme': rep['scheme'],
             'host': rep['host'],
+            'port': rep['port'],
             'endpoint_template': rep['endpoint_template'],
             'method': rep['method'],
             'status_code': rep['status_code'],
@@ -76,10 +89,33 @@ def build(annotated):
     return chunks
 
 
+def build_segments(annotated):
+    groups = OrderedDict()
+    for a in annotated:
+        groups.setdefault(d.behavior_collapse_key(a), []).append(a)
+
+    chunks = []
+    for items in groups.values():
+        rep = _representative(items)
+        parent_id = d.behavior_id(rep)
+        parent_meta = build(items)[0]['metadata']
+        for representation, text in d.behavior_segment_texts(rep).items():
+            metadata = dict(parent_meta)
+            metadata.update({'parent_id': parent_id, 'representation': representation})
+            chunks.append({
+                'id': d.md5(f"{parent_id}|{representation}"),
+                'embed_text': text,
+                'page_content': text,
+                'metadata': metadata,
+            })
+    return chunks
+
+
 def main():
     ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 3a: build behavior docs")
     ap.add_argument('input_file', nargs='?', default='annotated_traffic.json')
     ap.add_argument('-o', '--output', default='behavior_chunks.json')
+    ap.add_argument('--segments-output')
     args = ap.parse_args()
 
     with open(args.input_file) as f:
@@ -90,6 +126,12 @@ def main():
     with open(args.output, 'w') as f:
         json.dump(chunks, f, indent=2)
     print(f"Built {len(chunks)} distinct-behavior docs. Saved to {args.output}")
+    if args.segments_output:
+        segments = build_segments(annotated)
+        with open(args.segments_output, 'w') as f:
+            json.dump(segments, f, indent=2)
+        print(f"Built {len(segments)} behavior semantic segments. "
+              f"Saved to {args.segments_output}")
 
 
 if __name__ == '__main__':

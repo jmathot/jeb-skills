@@ -120,18 +120,20 @@ def pass_b_spa(annotated):
     routes_per_hash = defaultdict(set)
     for a in annotated:
         if a['_body_hash']:
-            routes_per_hash[(a['host'], a['_body_hash'])].add(a['endpoint'])
+            routes_per_hash[(a['scheme'], a['host'], a['port'],
+                             a['_body_hash'])].add(a['endpoint'])
 
     shell_hashes = set()
     for a in annotated:
         if not a['_body_hash']:
             continue
-        key = (a['host'], a['_body_hash'])
+        key = (a['scheme'], a['host'], a['port'], a['_body_hash'])
         if a['_is_shell_heuristic'] or len(routes_per_hash[key]) >= SPA_ROUTE_THRESHOLD:
             shell_hashes.add(key)
 
     for a in annotated:
-        if a['_body_hash'] and (a['host'], a['_body_hash']) in shell_hashes:
+        if a['_body_hash'] and (a['scheme'], a['host'], a['port'],
+                                a['_body_hash']) in shell_hashes:
             a['resp_class'] = 'spa_shell'
             a['_html_blocks'] = set()
 
@@ -141,19 +143,19 @@ def pass_c_boilerplate(annotated):
     pages_by_host = defaultdict(list)
     for a in annotated:
         if a['resp_class'] == 'html_document':
-            pages_by_host[a['host']].append(a)
+            pages_by_host[(a['scheme'], a['host'], a['port'])].append(a)
 
     boilerplate = {}
-    for host, pages in pages_by_host.items():
+    for origin, pages in pages_by_host.items():
         if len(pages) < BOILERPLATE_MIN_PAGES:
-            boilerplate[host] = set()
+            boilerplate[origin] = set()
             continue
         freq = defaultdict(int)
         for a in pages:
             for block in a['_html_blocks']:
                 freq[block] += 1
         cutoff = len(pages) * BOILERPLATE_FRACTION
-        boilerplate[host] = {b for b, c in freq.items() if c > cutoff}
+        boilerplate[origin] = {b for b, c in freq.items() if c > cutoff}
     return boilerplate
 
 
@@ -162,7 +164,8 @@ def pass_d_distill(annotated, boilerplate):
         respf = d.response_features(a['_resp_headers'], a.get('_req_origin', ''))
         distilled, schema_sig = d.distill_response(
             a['resp_class'], a['_resp_body'], a['resp_content_type'],
-            respf['redirect_location'], boilerplate.get(a['host'], set()))
+             respf['redirect_location'], boilerplate.get(
+                 (a['scheme'], a['host'], a['port']), set()))
         a['resp_features'] = respf
         a['resp_distilled'] = distilled
         a['resp_schema_sig'] = schema_sig
@@ -182,11 +185,11 @@ def _cookie_name(entry: str) -> str:
 
 def build_auth_models(annotated):
     models = {}
-    hosts = defaultdict(list)
+    origins = defaultdict(list)
     for a in annotated:
-        hosts[a['host']].append(a)
+        origins[(a['scheme'], a['host'], a['port'])].append(a)
 
-    for host, items in hosts.items():
+    for (scheme, host, port), items in origins.items():
         mechanisms = set()
         set_map = defaultdict(set)
         sent_map = defaultdict(set)
@@ -213,7 +216,11 @@ def build_auth_models(annotated):
 
         app_missing = sorted(h for h, c in miss_count.items()
                              if total_dynamic and c / total_dynamic > 0.5)
-        models[host] = {
+        origin = f"{scheme}://{host}:{port}"
+        models[origin] = {
+            'scheme': scheme,
+            'host': host,
+            'port': port,
             'auth_mechanisms': sorted(mechanisms),
             'cookies_set_map': {k: sorted(v) for k, v in set_map.items()},
             'cookies_sent_map': {k: sorted(v) for k, v in sent_map.items()},
@@ -229,7 +236,7 @@ def _content_fp(a):
     body = a.get('_resp_body', '')
     rc = a['resp_class']
     if rc == 'api_structured':
-        return d.json_schema(body)[0]
+        return d.structured_schema(body, a.get('resp_content_type', ''))[0]
     if rc in ('html_document', 'text_other'):
         return d.page_fingerprint(body)
     return ''
@@ -274,11 +281,12 @@ def pass_access(annotated):
             if d.html_login_signals(body)['is_login'] or d.is_login_path(a['endpoint']):
                 fp = d.page_fingerprint(body)
                 if fp:
-                    login_fps[a['host']].add(fp)
+                    login_fps[(a['scheme'], a['host'], a['port'])].add(fp)
 
     # Step 2: per-item access_class + anonymous outcome flags.
     for a in annotated:
-        a['access_class'] = _access_class(a, login_fps[a['host']])
+        origin = (a['scheme'], a['host'], a['port'])
+        a['access_class'] = _access_class(a, login_fps[origin])
         a['_content_fp'] = _content_fp(a)
         authed = a['req_features']['authenticated']
         a['anon_data_served'] = (not authed) and a['access_class'] == 'data'
@@ -289,7 +297,8 @@ def pass_access(annotated):
     # response is high-confidence real access.
     groups = defaultdict(list)
     for a in annotated:
-        groups[(a['host'], a['method'], a['endpoint_template'])].append(a)
+        groups[(a['scheme'], a['host'], a['port'], a['method'],
+                a['endpoint_template'])].append(a)
     for items in groups.values():
         authed_fps = {a['_content_fp'] for a in items
                       if a['req_features']['authenticated'] and a['access_class'] == 'data'
