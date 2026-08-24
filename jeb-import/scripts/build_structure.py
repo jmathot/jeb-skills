@@ -7,11 +7,12 @@ Aggregates annotated items into one node per (host, method, endpoint_template)
 """
 import argparse
 import json
-from collections import OrderedDict
+from collections import Counter, OrderedDict, defaultdict
 
 import distill as d
 
 CORS_RANK = {'*': 4, 'reflected': 3, 'null': 2, 'specific': 1, '': 0}
+ENTITY_JACCARD_THRESHOLD = 0.6
 
 
 def _csv(v):
@@ -30,6 +31,27 @@ def _node_kind(template, method, produces):
 
 def _cookie_name(entry):
     return entry.split('(', 1)[0]
+
+
+def _dominant_schema(items, sig_field, keys_field):
+    """Most common non-empty schema_sig across a group of items, with its keys."""
+    sigs = Counter(a[sig_field] for a in items if a.get(sig_field))
+    if not sigs:
+        return '', []
+    sig, _ = sigs.most_common(1)[0]
+    keys = next((a[keys_field] for a in items if a.get(sig_field) == sig), [])
+    return sig, keys
+
+
+def _union_identifier_pairs(items):
+    seen, out = set(), []
+    for a in items:
+        for pair in a.get('identifiers', []):
+            pair = tuple(pair)
+            if pair not in seen:
+                seen.add(pair)
+                out.append(pair)
+    return out[:d.IDENTIFIER_CAP]
 
 
 def build_endpoint_nodes(annotated):
@@ -114,11 +136,22 @@ def build_endpoint_nodes(annotated):
             'instance_count': len(items),
             'example_ids': example_ids[:5],
         }
+        node['resp_schema_sig'], node['resp_schema_keys'] = _dominant_schema(
+            items, 'resp_schema_sig', 'resp_schema_keys')
+        node['req_schema_sig'], node['req_schema_keys'] = _dominant_schema(
+            items, 'req_schema_sig', 'req_schema_keys')
+        node['identifier_pairs'] = _union_identifier_pairs(items)
         nodes.append(node)
     return nodes
 
 
-def endpoint_chunk(node):
+def endpoint_chunk(node, entity_of=None):
+    entity_of = entity_of or {}
+    entity_ids = []
+    for sig in (node.get('resp_schema_sig', ''), node.get('req_schema_sig', '')):
+        eid = entity_of.get(sig)
+        if eid and eid not in entity_ids:
+            entity_ids.append(eid)
     embed_text = d.structure_embed_text(node)
     summary = d.structure_summary(node)
     pc = [
@@ -161,12 +194,15 @@ def endpoint_chunk(node):
         'instance_count': node['instance_count'],
         'path_depth': node['path_depth'],
         'example_ids': _csv(node['example_ids']),
+        'entity_ids': _csv(entity_ids),
+        'granularity': 'parent',
         'summary': summary,
     }
     node_id = d.md5(f"{node['scheme']}|{node['host']}|{node['port']}|"
                     f"{node['method']}|{node['endpoint_template']}|{node['node_kind']}")
     return {'id': node_id, 'embed_text': embed_text,
-            'page_content': "\n".join(pc), 'metadata': metadata}
+            'page_content': "\n".join(pc), 'metadata': metadata,
+            'identifier_pairs': node.get('identifier_pairs', [])}
 
 
 def auth_model_chunk(origin, model):
@@ -212,6 +248,7 @@ def auth_model_chunk(origin, model):
         'instance_count': 1,
         'path_depth': 0,
         'example_ids': '',
+        'granularity': 'parent',
         'summary': summary,
     }
     node_id = d.md5(f"{origin}|auth_model")
@@ -219,13 +256,112 @@ def auth_model_chunk(origin, model):
             'page_content': "\n".join(pc), 'metadata': metadata}
 
 
-def build_segments(nodes, auth_models):
+def _jaccard(a, b):
+    if not a or not b:
+        return 0.0
+    sa, sb = set(a), set(b)
+    return len(sa & sb) / len(sa | sb)
+
+
+def build_entities(nodes):
+    """Cross-endpoint structural correlation: group by response/request-body
+    schema signature across ALL endpoints (not just within one, unlike
+    behavior_collapse_key). A schema seen at 2+ distinct (method, template)
+    pairs -- whether as a response shape, a request-body shape, or one
+    endpoint's request matching another's response -- becomes one entity node
+    linking every producing/consuming route. Near-identical (but not exactly
+    equal) schemas are recorded as lower-confidence `related` matches."""
+    by_sig = OrderedDict()
+    for n in nodes:
+        ep = (n['method'], n['endpoint_template'])
+        rsig, rkeys = n.get('resp_schema_sig', ''), n.get('resp_schema_keys', [])
+        if rsig:
+            e = by_sig.setdefault(rsig, {'keys': rkeys, 'produced_by': [], 'consumed_by': []})
+            if ep not in e['produced_by']:
+                e['produced_by'].append(ep)
+        qsig, qkeys = n.get('req_schema_sig', ''), n.get('req_schema_keys', [])
+        if qsig:
+            e = by_sig.setdefault(qsig, {'keys': qkeys, 'produced_by': [], 'consumed_by': []})
+            if ep not in e['consumed_by']:
+                e['consumed_by'].append(ep)
+
+    entities, entity_of = [], {}
+    for sig, e in by_sig.items():
+        if len(set(e['produced_by']) | set(e['consumed_by'])) < 2:
+            continue
+        e['schema_sig'] = sig
+        e['likely_identifier_field'] = d.likely_identifier_field(e['keys'])
+        entities.append(e)
+        entity_of[sig] = d.md5(f"entity|{sig}")
+
+    for i, e1 in enumerate(entities):
+        related = []
+        for j, e2 in enumerate(entities):
+            if i == j:
+                continue
+            score = _jaccard(e1['keys'], e2['keys'])
+            if score >= ENTITY_JACCARD_THRESHOLD:
+                related.append((e2['schema_sig'], round(score, 2)))
+        e1['related'] = sorted(related, key=lambda x: -x[1])[:5]
+
+    return entities, entity_of
+
+
+def entity_chunk(entity, entity_id):
+    embed_text = d.entity_embed_text(entity)
+    summary = d.entity_summary(entity)
+    pc = [
+        f"ENTITY  identifier_field={entity.get('likely_identifier_field') or '-'}",
+        f"fields: {', '.join(entity.get('keys', []))}",
+        "produced by:",
+    ] + [f"  {m} {t}" for m, t in entity.get('produced_by', [])] + [
+        "consumed by:",
+    ] + [f"  {m} {t}" for m, t in entity.get('consumed_by', [])]
+    if entity.get('related'):
+        pc.append("related schemas (fuzzy match): " +
+                   ", ".join(f"{sig[:8]}~{score}" for sig, score in entity['related']))
+    metadata = {
+        'doc_kind': 'structure',
+        'scheme': '', 'host': '', 'port': 0,
+        'endpoint_template': '{entity}',
+        'method': '',
+        'node_kind': 'entity',
+        'param_names': '',
+        'produces': '',
+        'status_codes': '',
+        'authenticated_ever': False,
+        'anon_allowed': False,
+        'anon_soft_denied': False,
+        'access_control': 'unknown',
+        'auth_mechanisms': '',
+        'cookies_sent': '',
+        'cookies_set': '',
+        'security_headers_missing': '',
+        'cors': '',
+        'is_static': False,
+        'instance_count': len(set(entity.get('produced_by', [])) | set(entity.get('consumed_by', []))),
+        'path_depth': 0,
+        'example_ids': '',
+        'entity_ids': '',
+        'schema_sig': entity['schema_sig'],
+        'identifier_field': entity.get('likely_identifier_field', ''),
+        'produced_by': _csv([f"{m} {t}" for m, t in entity.get('produced_by', [])]),
+        'consumed_by': _csv([f"{m} {t}" for m, t in entity.get('consumed_by', [])]),
+        'granularity': 'parent',
+        'summary': summary,
+    }
+    return {'id': entity_id, 'embed_text': embed_text,
+            'page_content': "\n".join(pc), 'metadata': metadata}
+
+
+def build_segments(nodes, auth_models, entity_of=None):
     chunks = []
     for node in nodes:
-        parent = endpoint_chunk(node)
+        parent = endpoint_chunk(node, entity_of)
         for representation, text in d.structure_segment_texts(node).items():
             metadata = dict(parent['metadata'])
-            metadata.update({'parent_id': parent['id'], 'representation': representation})
+            metadata.update({'parent_id': parent['id'], 'representation': representation,
+                             'granularity': 'segment'})
             chunks.append({
                 'id': d.md5(f"{parent['id']}|{representation}"),
                 'embed_text': text,
@@ -235,7 +371,8 @@ def build_segments(nodes, auth_models):
     for origin, model in auth_models.items():
         parent = auth_model_chunk(origin, model)
         metadata = dict(parent['metadata'])
-        metadata.update({'parent_id': parent['id'], 'representation': 'auth_model'})
+        metadata.update({'parent_id': parent['id'], 'representation': 'auth_model',
+                         'granularity': 'segment'})
         chunks.append({
             'id': d.md5(f"{parent['id']}|auth_model"),
             'embed_text': parent['embed_text'],
@@ -246,10 +383,9 @@ def build_segments(nodes, auth_models):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 3b: build structure docs")
+    ap = argparse.ArgumentParser(description="J.E.B. v3 Phase 3b: build structure docs")
     ap.add_argument('input_file', nargs='?', default='annotated_traffic.json')
     ap.add_argument('-o', '--output', default='structure_chunks.json')
-    ap.add_argument('--segments-output')
     args = ap.parse_args()
 
     with open(args.input_file) as f:
@@ -258,20 +394,21 @@ def main():
     auth_models = data.get('auth_models', {})
 
     nodes = build_endpoint_nodes(annotated)
-    chunks = [endpoint_chunk(n) for n in nodes]
+    entities, entity_of = build_entities(nodes)
+    chunks = [endpoint_chunk(n, entity_of) for n in nodes]
     for origin, model in auth_models.items():
         chunks.append(auth_model_chunk(origin, model))
+    for entity in entities:
+        chunks.append(entity_chunk(entity, entity_of[entity['schema_sig']]))
+    n_parents = len(chunks)
+
+    chunks += build_segments(nodes, auth_models, entity_of)
 
     with open(args.output, 'w') as f:
         json.dump(chunks, f, indent=2)
-    print(f"Built {len(chunks)} structure docs "
-          f"({len(auth_models)} auth-model node(s)). Saved to {args.output}")
-    if args.segments_output:
-        segments = build_segments(nodes, auth_models)
-        with open(args.segments_output, 'w') as f:
-            json.dump(segments, f, indent=2)
-        print(f"Built {len(segments)} structure semantic segments. "
-              f"Saved to {args.segments_output}")
+    print(f"Built {n_parents} structure docs "
+          f"({len(auth_models)} auth-model node(s), {len(entities)} entity node(s)) "
+          f"+ {len(chunks) - n_parents} semantic segments. Saved to {args.output}")
 
 
 if __name__ == '__main__':

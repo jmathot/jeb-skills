@@ -19,6 +19,21 @@ def _csv(v):
     return ",".join(v) if isinstance(v, (list, tuple)) else (v or "")
 
 
+def _union_identifier_pairs(items):
+    """Union of identifier (field, value) pairs across every collapsed instance,
+    not just the representative -- this is how instance-level identifier values
+    from collapsed duplicates stay searchable even though only one raw
+    request/response is kept as page_content."""
+    seen, out = set(), []
+    for a in items:
+        for pair in a.get('identifiers', []):
+            pair = tuple(pair)
+            if pair not in seen:
+                seen.add(pair)
+                out.append(pair)
+    return out[:d.IDENTIFIER_CAP]
+
+
 def _representative(items):
     """Choose the response nearest the group's median size, then the richest."""
     lengths = sorted(i.get('resp_len', 0) for i in items)
@@ -82,10 +97,12 @@ def build(annotated):
             'req_features': _csv(reqf['req_features_csv']),
             'jwt': reqf['jwt'],
             'redirect_location': respf['redirect_location'],
+            'granularity': 'parent',
             'summary': summary,
         }
         chunks.append({'id': d.behavior_id(rep), 'embed_text': embed_text,
-                       'page_content': page_content, 'metadata': metadata})
+                       'page_content': page_content, 'metadata': metadata,
+                       'identifier_pairs': _union_identifier_pairs(items)})
     return chunks
 
 
@@ -101,7 +118,8 @@ def build_segments(annotated):
         parent_meta = build(items)[0]['metadata']
         for representation, text in d.behavior_segment_texts(rep).items():
             metadata = dict(parent_meta)
-            metadata.update({'parent_id': parent_id, 'representation': representation})
+            metadata.update({'parent_id': parent_id, 'representation': representation,
+                             'granularity': 'segment'})
             chunks.append({
                 'id': d.md5(f"{parent_id}|{representation}"),
                 'embed_text': text,
@@ -112,10 +130,9 @@ def build_segments(annotated):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 3a: build behavior docs")
+    ap = argparse.ArgumentParser(description="J.E.B. v3 Phase 3a: build behavior docs")
     ap.add_argument('input_file', nargs='?', default='annotated_traffic.json')
     ap.add_argument('-o', '--output', default='behavior_chunks.json')
-    ap.add_argument('--segments-output')
     args = ap.parse_args()
 
     with open(args.input_file) as f:
@@ -123,15 +140,13 @@ def main():
     annotated = data['items'] if isinstance(data, dict) else data
 
     chunks = build(annotated)
+    n_parents = len(chunks)
+    chunks += build_segments(annotated)
+
     with open(args.output, 'w') as f:
         json.dump(chunks, f, indent=2)
-    print(f"Built {len(chunks)} distinct-behavior docs. Saved to {args.output}")
-    if args.segments_output:
-        segments = build_segments(annotated)
-        with open(args.segments_output, 'w') as f:
-            json.dump(segments, f, indent=2)
-        print(f"Built {len(segments)} behavior semantic segments. "
-              f"Saved to {args.segments_output}")
+    print(f"Built {n_parents} distinct-behavior docs + "
+          f"{len(chunks) - n_parents} semantic segments. Saved to {args.output}")
 
 
 if __name__ == '__main__':

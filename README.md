@@ -6,16 +6,23 @@ for mapping a web app and hunting vulnerabilities.
 
 ## Features
 
-- **Canonical and semantic collections**
+- **Three collections, canonical + semantic docs together**
   - `structure` — site map: one node per `(scheme, host, port, method, endpoint_template)`
-    with ids normalised (`/products/{id}`), plus a per-origin `auth_model` node
-    showing which cookies are set vs consumed where.
+    with ids normalised (`/products/{id}`), a per-origin `auth_model` node
+    showing which cookies are set vs consumed where, and `entity` nodes
+    correlating endpoints that share a response/request-body data shape
+    (e.g. a `POST` that edits a user and the `GET` that reads it back).
   - `behavior` — one doc per distinct request/response; near-duplicates collapse
     to a representative with an `instance_count`.
   - `attacks` — results of active testing, logged while hunting.
-  - `structure_segments` / `behavior_segments` — protocol-aware child vectors
-    for route, response, and access/session retrieval. Results resolve back to
-    canonical structure or behavior IDs.
+  - `structure` and `behavior` also hold protocol-aware semantic child vectors
+    (`granularity: "segment"`, vs. `"parent"` for canonical docs) for route,
+    response, and access/session retrieval; results resolve back to the
+    canonical parent id.
+- **Cross-endpoint correlation** — an exact-match identifier index
+  (`--identifier <value>`) finds every document, in any collection, that
+  referenced a given id/uuid/hash value — the instance-level counterpart to
+  `entity` nodes' structural (same-shape) correlation.
 - **Distilled embeddings** — vectors are built from a compact, value-suppressed
   summary (method, templated path, parameter names, response schema, security
   features). Raw HTTP is stored for deep-dive and substring search, so repeated
@@ -80,6 +87,9 @@ Re-imports under the current schema only re-embed documents whose content change
       --endpoint https://app/rest/search --method POST --param q \
       --payload "' OR 1=1--" --status 500 --verdict vulnerable --severity high
 
+    # Find every document (any collection) that referenced a specific id/uuid
+    "$PY" "$AGENT" --db-path ./chroma_db --identifier 42
+
 See the `jeb-query` skill for the full filterable-field reference.
 
 Retrieval controls:
@@ -102,7 +112,8 @@ Retrieval controls:
       --db-path ./chroma_db --collection all --color-by collection \
       --out vector_space.html
 
-The v3 visualizer includes canonical and semantic segment collections, collection
+The v4 visualizer includes canonical and semantic segment documents (distinguished
+by the `granularity` metadata field within each collection), collection
 schema/metric reporting, representation coverage, orphan detection, parent-child
 cosine-distance analysis, and cluster diagnostics. Use `--collection canonical`
 or `--collection segments` for focused views.

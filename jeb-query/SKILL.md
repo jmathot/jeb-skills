@@ -1,9 +1,9 @@
 ---
 name: jeb-query
-description: Query step for J.E.B. — hunt for vulnerabilities across a Burp capture mapped into three ChromaDB collections (structure, behavior, attacks). USE WHEN searching/querying an already-imported Burp database, hunting vulns, mapping the site/endpoints, semantic search over request/response behavior, filtering by metadata or raw header/cookie substrings, recording attack results, or deep-diving a specific doc by id. To first parse and embed a Burp XML export, use the jeb-import skill.
+description: Query step for J.E.B. — hunt for vulnerabilities across a Burp capture mapped into three ChromaDB collections (structure, behavior, attacks). USE WHEN searching/querying an already-imported Burp database, hunting vulns, mapping the site/endpoints, semantic search over request/response behavior, filtering by metadata or raw header/cookie substrings, correlating endpoints that share a data structure or an identifier value, recording attack results, or deep-diving a specific doc by id. To first parse and embed a Burp XML export, use the jeb-import skill.
 ---
 
-# J.E.B. — Query / Hunting Interface (v3)
+# J.E.B. — Query / Hunting Interface (v4)
 
 This skill queries a ChromaDB populated by the **`jeb-import`** skill. If the
 database does not exist yet, run `jeb-import` first.
@@ -95,9 +95,29 @@ protected but answer 200 with a login/deny page) separately:
 `anon_matches_auth: true` on a behavior doc is the strongest signal: the anon
 response matched the authenticated response byte-for-structure.
 
+**Correlate endpoints that share a data structure** — find every route reading
+or writing the same underlying object (e.g. does anything else touch the "user"
+that `POST /users/edit` writes?). Every `structure` route node carries
+`entity_ids`, pointing at synthetic `node_kind: "entity"` nodes built by
+grouping every endpoint's response/request-body JSON/XML key-schema across the
+**whole app** (not just within one route). Query the entity directly, or pivot
+from a route's `entity_ids`:
+```bash
+"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+  --where '{"node_kind": "entity"}' --query "user"
+```
+An entity node's `produced_by`/`consumed_by` list every `METHOD endpoint_template`
+that returns/writes that shape — e.g. `produced_by: GET /users/{id}` and
+`consumed_by: POST /users/edit` means both touch the same record shape. This is
+**structural** correlation (same/overlapping fields), confidence boosted by
+`related` fuzzy matches (Jaccard-overlapping key sets) noted in the entity's
+`page_content` when schemas are close but not identical. For **instance-level**
+proof that two requests touched the *same record* (not just the same shape), use
+`--identifier` (§6) to match on an actual id/uuid value shared between them.
+
 ### `structure` filterable fields
 - `doc_kind` (str): always `structure`
-- `node_kind` (str): `page` | `endpoint` | `action` | `auth_model`
+- `node_kind` (str): `page` | `endpoint` | `action` | `auth_model` | `entity`
 - `scheme`, `host`, `endpoint_template`, `method` (str), `port` (int)
 - `param_names` (str, csv), `produces` (str, csv content types)
 - `status_codes` (str, csv), `path_depth` (int), `instance_count` (int)
@@ -108,6 +128,10 @@ response matched the authenticated response byte-for-structure.
 - `auth_mechanisms` (str, csv), `cookies_sent` (str, csv), `cookies_set` (str, csv)
 - `security_headers_missing` (str, csv), `cors` (str: `*`/`reflected`/`null`/`specific`)
 - `is_static` (bool), `example_ids` (str, csv — behavior ids to pivot into)
+- `entity_ids` (str, csv — on a route node: which `entity` node(s) its
+  request/response shape belongs to)
+- `schema_sig`, `identifier_field`, `produced_by`, `consumed_by` (str — on
+  `node_kind: "entity"` nodes only; see above)
 
 ---
 
@@ -197,3 +221,35 @@ Verdicts: `vulnerable` | `not_vulnerable` | `inconclusive`. Query them back with
 - `vuln_class`, `verdict`, `severity` (str)
 - `host`, `endpoint_template`, `method`, `param` (str)
 - `status_code` (int), `source_behavior_id` (str), `payload` (str), `tool` (str), `time` (str)
+
+## 6. Correlate by identifier value (`--identifier`)
+
+Entity nodes (§1) prove two endpoints share a data *shape*; `--identifier` proves
+they touched the same *record*. It's an exact-match lookup across every
+collection for a concrete id/uuid/hash value seen in a URL path segment or a
+JSON field named like an identifier (`id`, `*_id`, `uuid`, `guid`):
+```bash
+"$PY" "$AGENT" --db-path ./chroma_db --identifier 42
+```
+Returns every `{id, collection, field}` hit, regardless of `--collection` —
+e.g. a `behavior` doc for `GET /users/42` and another for `POST /users/edit`
+whose body contained `"user_id": "42"`. Pivot into each with `--id <id>
+--collection <collection>` to read the full raw request/response. This is the
+concrete version of the "does this POST edit the same user this GET returned"
+question: matching `entity_ids` says probably (same shape); a matching
+`--identifier` says yes (same record).
+
+---
+
+## Worked example: correlating a POST edit with a GET read
+
+1. Map the app and note a write endpoint: `structure` has a `node_kind: action`
+   node for `POST /users/edit` with `entity_ids: <eid>`.
+2. Pull that entity: `--collection structure --where '{"node_kind":"entity"}'`
+   — its `produced_by` includes `GET /users/{id}`, confirming both endpoints
+   share the same response/request-body shape (same field set).
+3. Pick a concrete id seen in a `POST /users/edit` request body (e.g. from its
+   `behavior` doc's raw HTTP) and run `--identifier <that id>`. If it also
+   turns up on a `GET /users/{id}` `behavior` doc, that GET and POST operated
+   on the literal same record — strong evidence for chaining an IDOR/BOLA test
+   (edit as one user, read back via the other endpoint to confirm impact).

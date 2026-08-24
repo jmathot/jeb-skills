@@ -50,7 +50,8 @@ FACETS = {
                   'produces', 'authenticated_ever', 'anon_allowed', 'anon_soft_denied',
                   'access_control', 'auth_mechanisms',
                   'cookies_sent', 'cookies_set', 'security_headers_missing', 'cors',
-                  'instance_count', 'example_ids'],
+                  'instance_count', 'example_ids', 'entity_ids',
+                  'schema_sig', 'identifier_field', 'produced_by', 'consumed_by'],
     'behavior': ['method', 'scheme', 'host', 'port', 'endpoint_template',
                  'status_code', 'auth_role',
                  'auth_mechanism', 'access_class', 'anon_matches_auth', 'param_names',
@@ -84,15 +85,10 @@ class JebAgent:
                   "using raw query text. Re-run jeb-import into a fresh chroma_db.",
                   file=sys.stderr)
 
-        segment_name = f"{collection_name}_segments"
-        have = {c.name for c in self.client.list_collections()}
-        self.segment_collection = None
-        if segment_name in have:
-            candidate = self.client.get_collection(segment_name,
-                                                   embedding_function=self.ollama_ef)
-            segment_meta = candidate.metadata or {}
-            if segment_meta.get('collection_schema') == COLLECTION_SCHEMA:
-                self.segment_collection = candidate
+        # structure/behavior carry both 'parent' (canonical) and 'segment'
+        # (semantic child) documents in one collection, distinguished by the
+        # `granularity` metadata field; attacks has no segments.
+        self.has_segments = collection_name in ('structure', 'behavior')
 
     def _summarize(self, doc_id, meta, distance=None, snippet_len=SNIPPET_LEN_DEFAULT):
         kind = meta.get('doc_kind', self.collection_name)
@@ -105,6 +101,10 @@ class JebAgent:
         if snippet_len:
             out['summary'] = (meta.get('summary', '') or '')[:snippet_len]
         return out
+
+    @staticmethod
+    def _and_where(where, extra):
+        return {"$and": [where, extra]} if where else extra
 
     @staticmethod
     def _fts_query(query):
@@ -178,24 +178,22 @@ class JebAgent:
         if top_p is not None:
             top_p = max(0.0, min(float(top_p), 1.0))
         min_results = max(1, min(int(min_results), top_k))
-        dense_collection = self.segment_collection or self.collection
-        lexical_collection = (f"{self.collection_name}_segments"
-                              if self.segment_collection else self.collection_name)
+        lexical_collection = self.collection_name
 
         kwargs = {'n_results': candidate_k,
                   'include': ['metadatas', 'distances']}
-        if where and self.segment_collection:
-            kwargs['where'] = where
+        if self.has_segments:
+            kwargs['where'] = self._and_where(where, {'granularity': 'segment'})
         elif where:
             kwargs['where'] = where
-        if where_document and not self.segment_collection:
+        if where_document and not self.has_segments:
             kwargs['where_document'] = where_document
         if self.prefixed:
             kwargs['query_embeddings'] = [embed_query(
                 self.ollama_ef, self.collection_name, query)]
         else:
             kwargs['query_texts'] = [query]
-        dense = dense_collection.query(**kwargs)
+        dense = self.collection.query(**kwargs)
 
         if max_distance is None:
             max_distance = DEFAULT_MAX_DISTANCE.get(self.collection_name)
@@ -224,12 +222,11 @@ class JebAgent:
                     entry['representations'].add(representation)
 
         merge_dense(dense, 'dense')
-        if where_document and self.segment_collection:
+        if where_document and self.has_segments:
             raw_kwargs = {'n_results': candidate_k,
                           'include': ['metadatas', 'distances'],
-                          'where_document': where_document}
-            if where:
-                raw_kwargs['where'] = where
+                          'where_document': where_document,
+                          'where': self._and_where(where, {'granularity': 'parent'})}
             if self.prefixed:
                 raw_kwargs['query_embeddings'] = [embed_query(
                     self.ollama_ef, self.collection_name, query)]
@@ -325,6 +322,29 @@ class JebAgent:
                     break
         return out
 
+    def find_by_identifier(self, value, limit=50):
+        """Exact-match lookup across every collection for a concrete id/uuid/hash
+        value (e.g. a user id) seen in a URL path or a JSON field named like an
+        identifier. This is the instance-level counterpart to schema-based
+        `entity` correlation in `structure`: two different endpoints sharing
+        the same identifier value are very likely operating on the same
+        underlying record."""
+        path = os.path.join(self.db_path, 'jeb_lexical.sqlite')
+        if not os.path.exists(path):
+            return []
+        try:
+            with sqlite3.connect(path) as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT doc_id, collection_name, field "
+                    "FROM identifier_index WHERE value = ? LIMIT ?",
+                    (value, limit),
+                ).fetchall()
+        except sqlite3.Error as e:
+            print(f"[jeb-query] Identifier lookup unavailable: {e}", file=sys.stderr)
+            return []
+        return [{'id': doc_id, 'collection': coll, 'field': field}
+                for doc_id, coll, field in rows]
+
     def get_full(self, doc_id):
         res = self.collection.get(ids=[doc_id], include=['documents', 'metadatas'])
         if not res['ids']:
@@ -363,7 +383,7 @@ class JebAgent:
             'severity': m.get('severity', ''), 'status_code': record['status_code'],
             'source_behavior_id': m.get('source_id', ''),
             'payload': record['payload'], 'tool': m.get('tool', ''),
-            'time': now, 'summary': summary,
+            'time': now, 'granularity': 'parent', 'summary': summary,
         }
         doc_id = d.md5(f"{now}|{template}|{record['param']}|{record['payload']}")
         embedding = embed_documents(self.ollama_ef, [embed_text])[0] if self.prefixed else None
@@ -392,6 +412,10 @@ def main():
     ap.add_argument('--query')
     ap.add_argument('--similar-to', dest='similar_to')
     ap.add_argument('--id')
+    ap.add_argument('--identifier',
+                    help='Exact id/uuid/hash value to look up across every '
+                         'collection (e.g. a user id) -- finds every document '
+                         'that referenced it, regardless of route.')
     ap.add_argument('--where')
     ap.add_argument('--where-document', dest='where_document',
                     help='JSON, e.g. \'{"$contains": "SameSite=None"}\' (substring over raw HTTP)')
@@ -463,8 +487,10 @@ def main():
                                             where_document, args.snippet_len), indent=2))
     elif args.id:
         print(json.dumps(agent.get_full(args.id), indent=2))
+    elif args.identifier:
+        print(json.dumps(agent.find_by_identifier(args.identifier), indent=2))
     else:
-        print("Provide --query, --similar-to, --id, or --record-attack")
+        print("Provide --query, --similar-to, --id, --identifier, or --record-attack")
 
 
 if __name__ == '__main__':

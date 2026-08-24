@@ -77,6 +77,34 @@ def update_lexical_index(db_path, collection_name, chunks):
             )
 
 
+def update_identifier_index(db_path, collection_name, chunks):
+    """Exact-match index of (field, value) identifier pairs per document, kept
+    outside Chroma metadata (high-cardinality values don't belong in vector-DB
+    metadata) and outside embed_text (no raw entropy in the vectors). Powers
+    `jeb-query --identifier <value>` for instance-level cross-endpoint
+    correlation, e.g. finding every place a specific user id appears."""
+    path = os.path.join(db_path, 'jeb_lexical.sqlite')
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS identifier_index ("
+            "value TEXT, field TEXT, doc_id TEXT, collection_name TEXT)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_identifier_value ON identifier_index(value)"
+        )
+        for chunk in chunks:
+            conn.execute(
+                "DELETE FROM identifier_index WHERE doc_id = ? AND collection_name = ?",
+                (chunk['id'], collection_name),
+            )
+            pairs = chunk.get('identifier_pairs') or []
+            conn.executemany(
+                "INSERT INTO identifier_index(value, field, doc_id, collection_name) "
+                "VALUES (?, ?, ?, ?)",
+                [(value, field, chunk['id'], collection_name) for field, value in pairs],
+            )
+
+
 def upsert_with_retry(collection, documents, embeddings, metadatas, ids, max_retries=5):
     for attempt in range(max_retries):
         try:
@@ -189,7 +217,8 @@ def main():
         )
     total = store(collection, chunks, ollama_ef)
     update_lexical_index(db_path, args.collection, chunks)
-    print(f"Updated lexical index for {len(chunks)} documents.")
+    update_identifier_index(db_path, args.collection, chunks)
+    print(f"Updated lexical + identifier index for {len(chunks)} documents.")
     print(f"\n✓ Stored {total} documents in collection '{args.collection}'."
           if total else "Nothing new to store.")
 

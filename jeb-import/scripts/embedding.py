@@ -23,8 +23,12 @@ from chromadb.utils import embedding_functions
 
 # Bump this string whenever the prompt scheme changes so stale databases embedded
 # under an older scheme can be detected (and either handled or rebuilt).
-EMBEDDING_SCHEME = "embeddinggemma-v3-semantic-segments"
-COLLECTION_SCHEMA = "jeb-v3"
+# v4: structure_segments/behavior_segments folded into structure/behavior via a
+# `granularity` metadata field (parent|segment); entity nodes + identifier index
+# added. A v3 chroma_db has no `granularity` field on its docs, so v4's dense
+# query (which filters on it) would silently return nothing -- rebuild it.
+EMBEDDING_SCHEME = "embeddinggemma-v4-unified-collections"
+COLLECTION_SCHEMA = "jeb-v4"
 DISTANCE_METRIC = "cosine"
 
 OLLAMA_URL = "http://localhost:11434/api/embeddings"

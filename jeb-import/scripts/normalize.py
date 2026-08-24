@@ -83,6 +83,11 @@ def pass_a(items):
         reqf = d.request_features(method, url, req_headers, param_names)
         req_origin = d.header_get(req_headers, 'origin')
 
+        req_schema_sig, req_schema_keys = '', []
+        if req_body and ('json' in req_ct or 'xml' in req_ct):
+            req_schema_sig, _, req_schema_keys = d.structured_schema(req_body, req_ct)
+        identifiers = d.extract_identifier_values(endpoint, [req_body, resp_body])
+
         status_code = d._to_int(item.get('status', ''))
         resp_class = d.classify_response(status_code, resp_headers, resp_body,
                                          resp_ct, file_ext, item.get('mimetype', ''))
@@ -99,6 +104,8 @@ def pass_a(items):
             'file_ext': file_ext,
             'req_content_type': req_ct, 'resp_content_type': resp_ct,
             'param_names': param_names, 'param_count': len(param_names),
+            'req_schema_sig': req_schema_sig, 'req_schema_keys': req_schema_keys,
+            'identifiers': identifiers,
             'req_features': reqf,
             '_req_origin': req_origin,
             '_resp_headers': resp_headers,
@@ -162,13 +169,14 @@ def pass_c_boilerplate(annotated):
 def pass_d_distill(annotated, boilerplate):
     for a in annotated:
         respf = d.response_features(a['_resp_headers'], a.get('_req_origin', ''))
-        distilled, schema_sig = d.distill_response(
+        distilled, schema_sig, schema_keys = d.distill_response(
             a['resp_class'], a['_resp_body'], a['resp_content_type'],
              respf['redirect_location'], boilerplate.get(
                  (a['scheme'], a['host'], a['port']), set()))
         a['resp_features'] = respf
         a['resp_distilled'] = distilled
         a['resp_schema_sig'] = schema_sig
+        a['resp_schema_keys'] = schema_keys
         # page title for structure page nodes
         a['page_title'] = ''
         if a['resp_class'] == 'html_document' and distilled.startswith('page: '):

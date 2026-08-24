@@ -43,8 +43,6 @@ PARSED_JSON="$PROJECT_DIR/parsed_${BASENAME}.json"
 ANNOTATED_JSON="$PROJECT_DIR/annotated_${BASENAME}.json"
 STRUCTURE_JSON="$PROJECT_DIR/structure_${BASENAME}.json"
 BEHAVIOR_JSON="$PROJECT_DIR/behavior_${BASENAME}.json"
-STRUCTURE_SEGMENTS_JSON="$PROJECT_DIR/structure_segments_${BASENAME}.json"
-BEHAVIOR_SEGMENTS_JSON="$PROJECT_DIR/behavior_segments_${BASENAME}.json"
 DB_PATH="$PROJECT_DIR/chroma_db"
 
 echo "Project directory: $PROJECT_DIR"
@@ -54,17 +52,13 @@ echo "Step 1/5: Parsing $INPUT_XML ..."
 echo "Step 2/5: Normalising + annotating (SPA/boilerplate/security passes) ..."
 "$PYTHON" "$SCRIPT_DIR/normalize.py" "$PARSED_JSON" -o "$ANNOTATED_JSON"
 
-echo "Step 3/5: Building the 'structure' collection ..."
-"$PYTHON" "$SCRIPT_DIR/build_structure.py" "$ANNOTATED_JSON" -o "$STRUCTURE_JSON" \
-    --segments-output "$STRUCTURE_SEGMENTS_JSON"
+echo "Step 3/5: Building the 'structure' collection (site map + entities + semantic segments) ..."
+"$PYTHON" "$SCRIPT_DIR/build_structure.py" "$ANNOTATED_JSON" -o "$STRUCTURE_JSON"
 "$PYTHON" "$SCRIPT_DIR/vector_store.py" "$STRUCTURE_JSON" --db-path "$DB_PATH" --collection structure
-"$PYTHON" "$SCRIPT_DIR/vector_store.py" "$STRUCTURE_SEGMENTS_JSON" --db-path "$DB_PATH" --collection structure_segments
 
-echo "Step 4/5: Building the 'behavior' collection ..."
-"$PYTHON" "$SCRIPT_DIR/build_behavior.py" "$ANNOTATED_JSON" -o "$BEHAVIOR_JSON" \
-    --segments-output "$BEHAVIOR_SEGMENTS_JSON"
+echo "Step 4/5: Building the 'behavior' collection (distinct behaviors + semantic segments) ..."
+"$PYTHON" "$SCRIPT_DIR/build_behavior.py" "$ANNOTATED_JSON" -o "$BEHAVIOR_JSON"
 "$PYTHON" "$SCRIPT_DIR/vector_store.py" "$BEHAVIOR_JSON" --db-path "$DB_PATH" --collection behavior
-"$PYTHON" "$SCRIPT_DIR/vector_store.py" "$BEHAVIOR_SEGMENTS_JSON" --db-path "$DB_PATH" --collection behavior_segments
 
 echo "Step 5/5: Done. The 'attacks' collection is created on demand by"
 echo "          jeb-query's record-attack during active testing."

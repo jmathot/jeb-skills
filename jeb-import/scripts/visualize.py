@@ -1,5 +1,5 @@
 """
-J.E.B. v3 — embedding-space inspector (standalone).
+J.E.B. v4 — embedding-space inspector (standalone).
 
 Renders a project's ChromaDB vectors as an interactive, self-contained HTML
 scatter so you can inspect canonical documents and protocol-aware semantic child
@@ -28,22 +28,14 @@ except ImportError as e:
     sys.exit(f"Missing a viz dependency ({e.name}). Install with:\n"
              f"  pip install -r {os.path.join(os.path.dirname(__file__), 'requirements-viz.txt')}")
 
-KNOWN_COLLECTIONS = (
-    'structure', 'structure_segments', 'behavior', 'behavior_segments', 'attacks',
-)
+KNOWN_COLLECTIONS = ('structure', 'behavior', 'attacks')
 DEFAULT_COLOR = {
     'structure': 'node_kind',
-    'structure_segments': 'representation',
     'behavior': 'auth_role',
-    'behavior_segments': 'representation',
     'attacks': 'vuln_class',
     'canonical': 'doc_kind',
     'segments': 'representation',
     'all': 'collection',
-}
-COLLECTION_GROUPS = {
-    'canonical': ('structure', 'behavior', 'attacks'),
-    'segments': ('structure_segments', 'behavior_segments'),
 }
 NEAR_DUP_EPS = 0.05
 
@@ -70,12 +62,19 @@ def unit_float(value):
 
 
 def load(db_path, collections):
+    """structure/behavior hold both canonical ('parent') and semantic child
+    ('segment') documents together, distinguished by the `granularity`
+    metadata field (v4+) rather than by collection name. --collection
+    canonical/segments load every known collection and keep only one record
+    type; a plain collection name loads both types from that collection."""
     client = chromadb.PersistentClient(path=os.path.abspath(db_path))
     have = {c.name for c in client.list_collections()}
+    record_filter = None
     if collections == ['all']:
         collections = [c for c in KNOWN_COLLECTIONS if c in have]
-    elif len(collections) == 1 and collections[0] in COLLECTION_GROUPS:
-        collections = [c for c in COLLECTION_GROUPS[collections[0]] if c in have]
+    elif len(collections) == 1 and collections[0] in ('canonical', 'segments'):
+        record_filter = 'canonical' if collections[0] == 'canonical' else 'segment'
+        collections = [c for c in KNOWN_COLLECTIONS if c in have]
     ids, embs, metas = [], [], []
     collection_info = {}
     for name in collections:
@@ -88,16 +87,21 @@ def load(db_path, collections):
         n = len(got['ids'])
         if not n:
             continue
-        ids.extend(f"{name}:{doc_id}" for doc_id in got['ids'])
-        embs.extend(got['embeddings'])
-        for doc_id, m in zip(got['ids'], got['metadatas']):
+        kept = 0
+        for doc_id, emb, m in zip(got['ids'], got['embeddings'], got['metadatas']):
             m = dict(m or {})
+            record_type = 'segment' if m.get('granularity') == 'segment' else 'canonical'
+            if record_filter and record_type != record_filter:
+                continue
             m.setdefault('doc_kind', name)
             m['collection'] = name
             m['document_id'] = doc_id
-            m['record_type'] = 'segment' if name.endswith('_segments') else 'canonical'
+            m['record_type'] = record_type
+            ids.append(f"{name}:{doc_id}")
+            embs.append(emb)
             metas.append(m)
-        print(f"  {name}: {n} vectors")
+            kept += 1
+        print(f"  {name}: {kept} vectors" + ("" if kept == n else f" (of {n} loaded)"))
     if not ids:
         sys.exit("No vectors found. Did you run the import pipeline?")
     return ids, np.asarray(embs, dtype=float), metas, collection_info
@@ -260,32 +264,22 @@ def segment_report(embs, metas, collection_info, scope=''):
         if meta.get('record_type') == 'canonical':
             canonical[(meta.get('collection'), meta.get('document_id'))] = idx
             continue
-        parent_collection = meta.get('collection', '').removesuffix('_segments')
-        parent_key = (parent_collection, meta.get('parent_id', ''))
+        parent_key = (meta.get('collection', ''), meta.get('parent_id', ''))
         representations[(meta.get('collection', ''),
                          meta.get('representation', '(none)'))] += 1
         parents[parent_key].add(meta.get('representation', '(none)'))
         segment_indices.append((idx, parent_key))
 
-    loaded_collections = set(collection_info)
-    loaded_segments = {name for name in loaded_collections
-                       if name.endswith('_segments')}
-    if not loaded_segments:
-        return (f"<h3>{html_escape(scope)}Semantic segment diagnostics</h3>"
-                "<p>No segment collections loaded.</p>", np.asarray([]))
     if not segment_indices:
         return (f"<h3>{html_escape(scope)}Semantic segment diagnostics</h3>"
-                "<p>Loaded segment collections contain no vectors.</p>",
-                np.asarray([]))
+                "<p>No segment-granularity documents loaded.</p>", np.asarray([]))
 
-    distances, orphaned, unresolved = [], 0, 0
+    distances, unresolved = [], 0
     for segment_idx, parent_key in segment_indices:
         parent_idx = canonical.get(parent_key)
         if parent_idx is None:
-            if parent_key[0] in loaded_collections:
-                orphaned += 1
-            else:
-                unresolved += 1
+            # e.g. --collection segments loads segment-granularity docs only.
+            unresolved += 1
             continue
         segment = embs[segment_idx]
         parent = embs[parent_idx]
@@ -307,9 +301,9 @@ def segment_report(embs, metas, collection_info, scope=''):
                          f"max={np.max(distances):.3f}")
     report = (
         f"<h3>{html_escape(scope)}Semantic segment diagnostics</h3>"
-        f"<p>parents represented: <b>{len(parents)}</b>; orphaned child vectors: "
-        f"<b>{orphaned}</b>; unresolved without loaded parent collection: "
-        f"<b>{unresolved}</b>; parent-child cosine distance: <b>{distance_text}</b></p>"
+        f"<p>parents represented: <b>{len(parents)}</b>; child vectors without a "
+        f"loaded parent: <b>{unresolved}</b>; parent-child cosine distance: "
+        f"<b>{distance_text}</b></p>"
         f"<p>coverage: {html_escape(coverage_text or 'none')}</p>"
         "<table border=1 cellpadding=4 style='border-collapse:collapse'>"
         "<tr><th>segment collection</th><th>representation</th><th>vectors</th></tr>"
@@ -360,11 +354,12 @@ def stats_header(ids, embs, metas, near_dup, total_count=None):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v3 embedding-space inspector")
+    ap = argparse.ArgumentParser(description="J.E.B. v4 embedding-space inspector")
     ap.add_argument('--db-path', default='./chroma_db')
     ap.add_argument('--collection', default='all',
-                    help="structure | structure_segments | behavior | "
-                         "behavior_segments | attacks | canonical | segments | all")
+                    help="structure | behavior | attacks (loads both parent and "
+                         "segment docs) | canonical | segments (parent-only / "
+                         "segment-only, across every collection) | all")
     ap.add_argument('--reduce', choices=['umap', 'tsne', 'pca'], default='umap')
     ap.add_argument('--color-by', default=None)
     ap.add_argument('--size-by', default='instance_count')

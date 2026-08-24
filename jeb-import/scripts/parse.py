@@ -7,7 +7,11 @@ Differences from the v1 `ingest.py`:
     because headers are never embedded in v2 — they live in the retrieval
     document and power `--where-document` substring filtering. Fidelity here is
     what makes cookie/header attack analysis possible.
-  * Deduplicates identical requests by method, URL, body, and credential context.
+  * No dedup at this stage: every item is kept, even exact repeats of the same
+    method/URL/body. A different response to an identical request (race
+    conditions, non-deterministic authz, rate limiting) is a real signal, and
+    the downstream behavior-collapse key (distill.py::behavior_collapse_key)
+    already merges genuinely identical request/response pairs correctly.
 
 Output: parsed_<name>.json — a list of items:
   {url, method, status, mimetype, responselength, time,
@@ -19,7 +23,6 @@ import base64
 import hashlib
 import json
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 # Only strip pure browser-hint / fetch-metadata noise; keep everything else.
 IGNORE_HEADER_PREFIX = ('sec-ch-', 'sec-fetch-')
@@ -30,20 +33,11 @@ MAX_STORED_BODY = 16000
 
 BINARY_CT = ('image/', 'application/pdf', 'audio/', 'video/',
              'application/octet-stream', 'font/')
-AUTH_COOKIE_NAMES = {
-    'session', 'sessionid', 'session_id', 'sid', 'jsessionid', 'phpsessid',
-    'asp.net_sessionid', 'connect.sid', 'laravel_session', 'ci_session',
-    'token', 'auth', 'auth_token', 'access_token', 'accesstoken', 'jwt',
-    'id_token', 'remember_token', 'oauth_token', 'apikey', 'api_key',
-}
-AUTH_HEADERS = {
-    'authorization', 'proxy-authorization', 'x-api-key', 'api-key',
-    'x-auth-token', 'x-access-token', 'x-session-token', 'loginid',
-    'authentication', 'currentrole',
-}
-AUTH_HEADER_SIGNALS = (
-    'auth', 'login', 'token', 'session', 'api-key', 'apikey', 'credential',
-)
+
+# For bodies too large to store in full and not structured JSON/XML: keep this
+# many chars from the head and the rest of the budget from the tail, so
+# trailing content (stack traces, closing error detail) isn't always lost.
+TAIL_KEEP = 4000
 
 
 def should_keep_header(name: str) -> bool:
@@ -79,42 +73,6 @@ def parse_http(raw: bytes, is_request: bool):
     except Exception as e:
         print(f"  warn: HTTP parse error: {e}")
         return None
-
-
-def normalize_url(url: str) -> str:
-    p = urlparse(url)
-    if p.query:
-        params = parse_qs(p.query, keep_blank_values=True)
-        params.pop('_', None)
-        query = urlencode(params, doseq=True)
-    else:
-        query = ''
-    return urlunparse((p.scheme, p.netloc, p.path, p.params, query, p.fragment))
-
-
-def auth_context_signature(headers: dict) -> str:
-    """Keep distinct credential contexts without persisting another secret copy."""
-    auth_parts = []
-    for name, value in headers.items():
-        lower = name.lower()
-        if lower == 'cookie':
-            for part in str(value).split(';'):
-                if '=' not in part:
-                    continue
-                cookie_name, cookie_value = part.split('=', 1)
-                cookie_name = cookie_name.strip().lower()
-                looks_jwt = (cookie_value.strip().count('.') == 2 and
-                             cookie_value.strip().startswith('eyJ'))
-                if cookie_name in AUTH_COOKIE_NAMES or looks_jwt or any(
-                        marker in cookie_name for marker in ('session', 'auth', 'token', 'jwt')):
-                    digest = hashlib.sha256(
-                        cookie_value.strip().encode('utf-8')).hexdigest()[:16]
-                    auth_parts.append(f"cookie:{cookie_name}:{digest}")
-        elif lower in AUTH_HEADERS or any(marker in lower
-                                          for marker in AUTH_HEADER_SIGNALS):
-            digest = hashlib.sha256(str(value).encode('utf-8')).hexdigest()[:16]
-            auth_parts.append(f"{lower}:{digest}")
-    return "|".join(sorted(auth_parts))
 
 
 def structured_json_preview(body: str) -> str:
@@ -170,7 +128,7 @@ def structured_xml_preview(body: str) -> str:
     return preview if len(preview) <= MAX_STORED_BODY else ''
 
 
-def process_item(item, seen):
+def process_item(item):
     url = item.findtext('url', '')
     method = item.findtext('method', '')
 
@@ -195,15 +153,6 @@ def process_item(item, seen):
                                  'headers': parsed['headers'],
                                  'body': req_body_str}
 
-    # Dedup identical requests.
-    body_hash = hashlib.md5(req_body_str.encode('utf-8')).hexdigest() if req_body_str else ''
-    request_headers = result.get('request', {}).get('headers', {})
-    sig = (method, normalize_url(url), body_hash,
-           auth_context_signature(request_headers))
-    if sig in seen:
-        return None
-    seen.add(sig)
-
     resp_el = item.find('response')
     if resp_el is not None and resp_el.text:
         raw = (base64.b64decode(resp_el.text) if resp_el.get('base64') == 'true'
@@ -217,15 +166,20 @@ def process_item(item, seen):
                     break
             truncated = False
             if any(b in ct for b in BINARY_CT):
-                body_str = '<BINARY_DATA_FILTERED>'
+                digest = hashlib.sha256(parsed['body']).hexdigest()[:16]
+                body_str = f'<BINARY_DATA_FILTERED sha256={digest} len={len(parsed["body"])}>'
             else:
                 body_str = parsed['body'].decode('utf-8', errors='ignore')
                 if len(body_str) > MAX_STORED_BODY:
                     preview = (structured_xml_preview(body_str)
                                if 'xml' in ct or body_str.lstrip().startswith('<?xml')
                                else structured_json_preview(body_str))
-                    body_str = (preview if preview else
-                                body_str[:MAX_STORED_BODY] + '\n<TRUNCATED>')
+                    if preview:
+                        body_str = preview
+                    else:
+                        head_keep = MAX_STORED_BODY - TAIL_KEEP
+                        body_str = (body_str[:head_keep] + '\n<TRUNCATED>\n' +
+                                    body_str[-TAIL_KEEP:])
                     truncated = True
             result['response'] = {'line': parsed['line'],
                                   'headers': parsed['headers'],
@@ -241,15 +195,12 @@ def main():
     args = ap.parse_args()
 
     root = ET.parse(args.xml_file).getroot()
-    seen, items = set(), []
-    for item in root.findall('item'):
-        r = process_item(item, seen)
-        if r is not None:
-            items.append(r)
+    items = [process_item(item) for item in root.findall('item')]
+    items = [r for r in items if r is not None]
 
     with open(args.output, 'w') as f:
         json.dump(items, f, indent=2)
-    print(f"Parsed {len(items)} unique items. Saved to {args.output}")
+    print(f"Parsed {len(items)} items. Saved to {args.output}")
 
 
 if __name__ == '__main__':

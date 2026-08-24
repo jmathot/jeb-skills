@@ -181,6 +181,70 @@ def path_depth(path: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Identifier values (for cross-endpoint instance correlation)
+# ---------------------------------------------------------------------------
+IDENTIFIER_CAP = 20
+_IDENTIFIER_KEY_RE = re.compile(r'(?:^|_)(id|uuid|guid)$', re.IGNORECASE)
+
+
+def _looks_like_identifier_value(v) -> bool:
+    s = str(v)
+    if not s or len(s) > 64:
+        return False
+    return bool(_NUM_RE.match(s) or _UUID_RE.match(s) or _HEX_RE.match(s))
+
+
+def _walk_identifier_values(obj, out, cap, depth=0):
+    if len(out) >= cap or depth > SCHEMA_DEPTH_CAP:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)):
+                _walk_identifier_values(v, out, cap, depth + 1)
+            elif _IDENTIFIER_KEY_RE.search(str(k)) and _looks_like_identifier_value(v):
+                out.append((str(k), str(v)))
+            if len(out) >= cap:
+                return
+    elif isinstance(obj, list):
+        for item in obj[:5]:
+            _walk_identifier_values(item, out, cap, depth + 1)
+            if len(out) >= cap:
+                return
+
+
+def extract_identifier_values(path: str, bodies) -> list:
+    """(field, value) pairs for id/uuid/hash-like values in a URL path and any
+    number of JSON bodies (pass request + response bodies together). `field`
+    is the URL path segment preceding the value ('path' if it's the first
+    segment) or the JSON key name. Values are kept verbatim (never templated)
+    so callers can exact-match the same identifier across different
+    endpoints/collections -- this is deliberately excluded from embed_text and
+    Chroma metadata; it belongs in a side exact-match index only."""
+    out = []
+    segs = [s for s in (path or '').split('/') if s]
+    for i, seg in enumerate(segs):
+        if len(out) >= IDENTIFIER_CAP:
+            break
+        if _NUM_RE.match(seg) or _UUID_RE.match(seg) or _HEX_RE.match(seg):
+            field = segs[i - 1] if i > 0 else 'path'
+            out.append((field, seg))
+    for body in bodies:
+        if len(out) >= IDENTIFIER_CAP or not body:
+            continue
+        try:
+            obj = json.loads(body)
+        except Exception:
+            continue
+        _walk_identifier_values(obj, out, IDENTIFIER_CAP)
+    seen, uniq = set(), []
+    for pair in out:
+        if pair not in seen:
+            seen.add(pair)
+            uniq.append(pair)
+    return uniq[:IDENTIFIER_CAP]
+
+
+# ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
 def _json_keys(obj, prefix, depth, out, cap):
@@ -569,11 +633,11 @@ def classify_response(status_code, resp_headers, resp_body, resp_ct, file_ext,
 
 
 def json_schema(body: str):
-    """Return (schema_sig, distilled_str) for a JSON/structured body."""
+    """Return (schema_sig, distilled_str, uniq_keys) for a JSON/structured body."""
     try:
         obj = json.loads(body)
     except Exception:
-        return '', _truncate(body, 200)
+        return '', _truncate(body, 200), []
 
     keys, samples, messages = [], [], []
     counter = {'n': 0}
@@ -610,7 +674,7 @@ def json_schema(body: str):
         bits.append("; ".join(messages[:3]))
     if samples:
         bits.append("sample: " + ", ".join(samples))
-    return sig, _truncate(" | ".join(bits), 800)
+    return sig, _truncate(" | ".join(bits), 800), uniq_keys[:SCHEMA_KEY_CAP]
 
 
 def xml_schema(body: str):
@@ -618,7 +682,7 @@ def xml_schema(body: str):
     try:
         root = ET.fromstring(body)
     except Exception:
-        return '', _truncate(body, 200)
+        return '', _truncate(body, 200), []
 
     paths, samples = [], []
 
@@ -646,10 +710,12 @@ def xml_schema(body: str):
         bits.append("elements: " + ", ".join(uniq_paths[:SCHEMA_KEY_CAP]))
     if samples:
         bits.append("sample: " + ", ".join(samples))
-    return md5("|".join(uniq_paths)), _truncate(" | ".join(bits), 800)
+    return (md5("|".join(uniq_paths)), _truncate(" | ".join(bits), 800),
+            uniq_paths[:SCHEMA_KEY_CAP])
 
 
 def structured_schema(body: str, content_type=''):
+    """Return (schema_sig, distilled_str, uniq_keys) for a JSON or XML body."""
     if 'xml' in (content_type or '').lower() or body.lstrip().startswith('<?xml'):
         return xml_schema(body)
     return json_schema(body)
@@ -769,21 +835,21 @@ def html_page_summary(body: str, boilerplate=None) -> str:
 
 
 def distill_response(resp_class, body, resp_ct, redirect_location, boilerplate=None):
-    """Route a response to the right distiller. Returns (distilled_str, schema_sig)."""
+    """Route a response to the right distiller. Returns (distilled_str, schema_sig, schema_keys)."""
     if resp_class == 'api_structured':
-        sig, summary = structured_schema(body, resp_ct)
-        return summary, sig
+        sig, summary, keys = structured_schema(body, resp_ct)
+        return summary, sig, keys
     if resp_class == 'html_document':
-        return html_page_summary(body, boilerplate), ''
+        return html_page_summary(body, boilerplate), '', []
     if resp_class == 'spa_shell':
-        return 'SPA application shell', ''
+        return 'SPA application shell', '', []
     if resp_class == 'static_asset':
-        return f"static asset {resp_ct or ''}".strip(), ''
+        return f"static asset {resp_ct or ''}".strip(), '', []
     if resp_class == 'redirect':
-        return f"redirect -> {redirect_location}".strip(), ''
+        return f"redirect -> {redirect_location}".strip(), '', []
     if resp_class == 'empty':
-        return 'empty body', ''
-    return _truncate(body, 200), ''
+        return 'empty body', '', []
+    return _truncate(body, 200), '', []
 
 
 # ---------------------------------------------------------------------------
@@ -949,6 +1015,38 @@ def auth_model_summary(host, model) -> str:
     s = (f"auth model {host} · mechanisms: "
          f"{','.join(model.get('auth_mechanisms', []) or ['none'])} · "
          f"{len(model.get('cookies_set_map', {}))} cookies set")
+    return _truncate(s, SUMMARY_CAP)
+
+
+def likely_identifier_field(keys) -> str:
+    """Pick the field most likely to be this entity's primary identifier."""
+    names = [k.rsplit('.', 1)[-1] for k in keys]
+    for k in names:
+        if k.lower() == 'id':
+            return 'id'
+    for k in names:
+        if _IDENTIFIER_KEY_RE.search(k):
+            return k
+    return ''
+
+
+def entity_embed_text(entity) -> str:
+    parts = [f"entity {entity.get('likely_identifier_field') or 'object'}"]
+    if entity.get('keys'):
+        parts.append("fields: " + ", ".join(entity['keys'][:20]))
+    if entity.get('produced_by'):
+        eps = ", ".join(f"{m} {t}" for m, t in entity['produced_by'][:6])
+        parts.append("produced by: " + eps)
+    if entity.get('consumed_by'):
+        eps = ", ".join(f"{m} {t}" for m, t in entity['consumed_by'][:6])
+        parts.append("consumed by: " + eps)
+    return _truncate(" | ".join(parts), EMBED_TEXT_CAP)
+
+
+def entity_summary(entity) -> str:
+    n_eps = len(set(entity.get('produced_by', [])) | set(entity.get('consumed_by', [])))
+    s = (f"entity ({entity.get('likely_identifier_field') or 'object'}) · "
+         f"{len(entity.get('keys', []))} fields · seen at {n_eps} endpoint(s)")
     return _truncate(s, SUMMARY_CAP)
 
 
