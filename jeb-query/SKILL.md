@@ -8,9 +8,11 @@ description: Query step for J.E.B. — hunt for vulnerabilities across a Burp ca
 This skill queries a ChromaDB populated by the **`jeb-import`** skill. If the
 database does not exist yet, run `jeb-import` first.
 
+Every command below starts with the same fixed prefix — run it exactly as shown,
+in full, every time; do not shorten it or store it in a variable, since a shell
+variable set in one command is **not** available in the next command:
 ```
-PY=~/.config/opencode/skill/jeb-import/scripts/venv/bin/python
-AGENT=~/.config/opencode/skill/jeb-query/scripts/agent_interface.py
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh
 ```
 
 **Always query the database belonging to the project you are working on.** Run
@@ -27,19 +29,15 @@ from the project directory so `./chroma_db` resolves to that project's DB, or pa
 
 ## How search works
 
-Canonical documents retain **raw HTTP** (behavior/attacks) or a readable node
-report (structure). Search uses protocol-aware semantic child vectors plus a
-project-local SQLite FTS5 index, fuses them with reciprocal-rank fusion, and then
-applies filtering, score thresholds, endpoint diversity, and cumulative relevance
-selection. So:
-- semantic `--query` independently matches route, response, and access concepts,
+- semantic `--query` matches route, response, and access concepts,
 - lexical retrieval recovers exact endpoints, parameters, and protocol terms,
 - `--where` filters metadata facets (equality / `$in` / numeric ranges),
-- `--where-document` substring-matches the **raw** headers/cookies/body.
+- `--where-document` substring-matches the **raw** HTTP (behavior/attacks) or
+  the node report text (structure).
 
-Every result includes normalized fused `score` (higher = better), contributing
-`sources`, semantic `representations`, cosine `distance` when a dense candidate
-contributed, and a `summary` snippet.
+Always wrap the entire `--where`/`--where-document` JSON value in single quotes
+(as in every example below), even for a one-field filter. Results are ranked by
+a fused `score` (higher = better).
 
 ### Retrieval controls
 
@@ -53,16 +51,13 @@ contributed, and a `summary` snippet.
 - `--min-results 3`: minimum result floor before `top_p` can stop selection.
 - `--max-per-endpoint 2`: diversity limit per `(host, endpoint_template)`.
 
-Precision-oriented example:
+The defaults above are fine for most searches — leave them out unless tuning
+precision or recall. Push `--candidate-k`/`--top-k`/`--top-p` up for broader
+recall, down for tighter precision:
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --query "password reset token" \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --query "password reset token" \
   --candidate-k 30 --top-k 5 --top-p 0.80 --min-score 0.35
-```
-
-Exploratory example:
-```bash
-"$PY" "$AGENT" --db-path ./chroma_db --query "authorization behavior" \
-  --candidate-k 100 --top-k 20 --top-p 0.98 --max-per-endpoint 3
 ```
 
 ---
@@ -70,7 +65,8 @@ Exploratory example:
 ## 1. Map the app (`--collection structure`)
 
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --collection structure \
   --query "authentication and account management"
 ```
 Read the per-origin **auth model** node (`--where '{"node_kind":"auth_model"}'`) to
@@ -79,7 +75,8 @@ missing-header posture.
 
 **Broken access control** — endpoints reachable without credentials:
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --collection structure \
   --query "admin or sensitive endpoint" --where '{"anon_allowed": true}'
 ```
 
@@ -89,7 +86,8 @@ returns the login page" (a *soft auth wall*) is **not** flagged. Those are marke
 `access_control: soft-auth-wall` instead. Find soft walls (endpoints that are
 protected but answer 200 with a login/deny page) separately:
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --collection structure \
   --where '{"access_control": "soft-auth-wall"}'
 ```
 `anon_matches_auth: true` on a behavior doc is the strongest signal: the anon
@@ -103,7 +101,8 @@ grouping every endpoint's response/request-body JSON/XML key-schema across the
 **whole app** (not just within one route). Query the entity directly, or pivot
 from a route's `entity_ids`:
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --collection structure \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --collection structure \
   --where '{"node_kind": "entity"}' --query "user"
 ```
 An entity node's `produced_by`/`consumed_by` list every `METHOD endpoint_template`
@@ -138,13 +137,15 @@ proof that two requests touched the *same record* (not just the same shape), use
 ## 2. Hunt behavior (`--collection behavior`, default)
 
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db \
   --query "password reset token in response" --where '{"method": "POST"}'
 ```
 
 Numeric fields support ranges — server errors with large bodies:
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --query "server error stack trace" \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --query "server error stack trace" \
   --where '{"$and": [{"status_code": {"$gte": 500}}, {"resp_len": {"$gte": 5000}}]}'
 ```
 
@@ -152,11 +153,13 @@ Filter on **raw** header/cookie text with `--where-document` (substring, case
 sensitive):
 ```bash
 # CORS wildcard responses
-"$PY" "$AGENT" --db-path ./chroma_db --query "cross origin api" \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --query "cross origin api" \
   --where-document '{"$contains": "Access-Control-Allow-Origin: *"}'
 
 # Session cookies without SameSite
-"$PY" "$AGENT" --db-path ./chroma_db --query "session cookie" \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --query "session cookie" \
   --where-document '{"$contains": "Set-Cookie"}'
 ```
 
@@ -188,7 +191,8 @@ Use `{"is_static": false}` to drop js/css/image noise.
 ## 3. Deep dive / recall by id (`--id`)
 
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --collection behavior --id <document_id>
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --collection behavior --id <document_id>
 ```
 Returns the full metadata and the raw request/response (or the node report for
 `structure`). Use `example_ids` from a `structure` node to jump to its behaviors.
@@ -196,7 +200,8 @@ Returns the full metadata and the raw request/response (or the node report for
 ## 4. Find similar (`--similar-to <id>`)
 
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --similar-to <document_id> --n-results 10
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --similar-to <document_id> --n-results 10
 ```
 Nearest neighbours by the canonical stored vector — the "more like this" pivot. Honours
 `--where`, `--where-document`, `--n-results`.
@@ -204,9 +209,12 @@ Nearest neighbours by the canonical stored vector — the "more like this" pivot
 ## 5. Record an attack result (`--record-attack`)
 
 After actively testing a request, persist the outcome to the `attacks`
-collection so it is searchable and remembered across sessions:
+collection so it is searchable and remembered across sessions. **Required:
+`--vuln-class` and `--endpoint`. Every other flag below is optional**
+(`--verdict` defaults to `inconclusive`).
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --record-attack \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --record-attack \
   --vuln-class SQLi --endpoint "https://app/rest/products/search" --method GET \
   --param q --payload "' OR 1=1--" --status 500 --verdict vulnerable \
   --severity high --source-id <behavior_id> \
@@ -229,7 +237,8 @@ they touched the same *record*. It's an exact-match lookup across every
 collection for a concrete id/uuid/hash value seen in a URL path segment or a
 JSON field named like an identifier (`id`, `*_id`, `uuid`, `guid`):
 ```bash
-"$PY" "$AGENT" --db-path ./chroma_db --identifier 42
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
+  --db-path ./chroma_db --identifier 42
 ```
 Returns every `{id, collection, field}` hit, regardless of `--collection` —
 e.g. a `behavior` doc for `GET /users/42` and another for `POST /users/edit`
@@ -237,19 +246,6 @@ whose body contained `"user_id": "42"`. Pivot into each with `--id <id>
 --collection <collection>` to read the full raw request/response. This is the
 concrete version of the "does this POST edit the same user this GET returned"
 question: matching `entity_ids` says probably (same shape); a matching
-`--identifier` says yes (same record).
-
----
-
-## Worked example: correlating a POST edit with a GET read
-
-1. Map the app and note a write endpoint: `structure` has a `node_kind: action`
-   node for `POST /users/edit` with `entity_ids: <eid>`.
-2. Pull that entity: `--collection structure --where '{"node_kind":"entity"}'`
-   — its `produced_by` includes `GET /users/{id}`, confirming both endpoints
-   share the same response/request-body shape (same field set).
-3. Pick a concrete id seen in a `POST /users/edit` request body (e.g. from its
-   `behavior` doc's raw HTTP) and run `--identifier <that id>`. If it also
-   turns up on a `GET /users/{id}` `behavior` doc, that GET and POST operated
-   on the literal same record — strong evidence for chaining an IDOR/BOLA test
-   (edit as one user, read back via the other endpoint to confirm impact).
+`--identifier` says yes (same record) — strong evidence for chaining an
+IDOR/BOLA test (edit as one user, read back via the other endpoint to confirm
+impact).
