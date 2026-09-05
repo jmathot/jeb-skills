@@ -20,7 +20,7 @@ for mapping a web app and hunting vulnerabilities.
     response, and access/session retrieval; results resolve back to the
     canonical parent id.
 - **Cross-endpoint correlation** — an exact-match identifier index
-  (`--identifier <value>`) finds every document, in any collection, that
+  (`identifier <value>`) finds every document, in any collection, that
   referenced a given id/uuid/hash value — the instance-level counterpart to
   `entity` nodes' structural (same-shape) correlation.
 - **Distilled embeddings** — vectors are built from a compact, value-suppressed
@@ -36,8 +36,9 @@ for mapping a web app and hunting vulnerabilities.
 - **Hybrid retrieval** — semantic child search plus SQLite FTS5 lexical search,
   reciprocal-rank fusion, endpoint diversity, score/distance thresholds,
   `top_k`, and cumulative retrieval `top_p` selection.
-- **Filtering** — metadata filters and `--where-document` substring search over
-  canonical raw headers/cookies are applied before final result selection.
+- **Filtering** — named metadata facet flags (`--anon`, `--status`, `--param`,
+  `--cors-open`, …) and `--contains` substring search over canonical raw
+  headers/cookies, applied before final result selection.
 - **Visualization** — interactive HTML map of the vector space with diagnostics.
 
 ## Requirements
@@ -64,44 +65,59 @@ Re-imports under the current schema only re-embed documents whose content change
 
 ## Query
 
-    PY=~/.config/opencode/skill/jeb-import/scripts/venv/bin/python
-    AGENT=~/.config/opencode/skill/jeb-query/scripts/agent_interface.py
+    JQ=~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh
 
-    # Broken access control: endpoints that return real data anonymously
-    "$PY" "$AGENT" --db-path ./chroma_db --collection structure \
-      --where '{"anon_allowed": true}'
+    # Everything about one endpoint, in one call: parameters, auth posture,
+    # cookies, headers, CORS, neighbouring routes, entity links, and the raw
+    # request/response of a representative exchange.
+    "$JQ" endpoint /api/orders
+    "$JQ" endpoint https://app/api/orders/42        # ids normalise to the template
 
-    # Semantic behavior search + metadata filter
-    "$PY" "$AGENT" --db-path ./chroma_db --query "server error" \
-      --where '{"status_code": {"$gte": 500}}' \
-      --candidate-k 40 --top-k 8 --top-p 0.90
+    # The site map, and how sessions work
+    "$JQ" map
+    "$JQ" map --kind auth_model
 
-    # Substring search over raw headers/cookies
-    "$PY" "$AGENT" --db-path ./chroma_db --query "cross origin" \
-      --where-document '{"$contains": "Access-Control-Allow-Origin: *"}'
+    # Hybrid search, or a pure metadata filter when you give no words
+    "$JQ" search "password reset token" --method POST
+    "$JQ" search --in structure --anon               # anonymous access to real data
+    "$JQ" search --status '>=500' --param q
+    "$JQ" search --contains "Access-Control-Allow-Origin: *"
 
-    # Deep-dive, pivot, and log a finding
-    "$PY" "$AGENT" --db-path ./chroma_db --id <id>
-    "$PY" "$AGENT" --db-path ./chroma_db --similar-to <id>
-    "$PY" "$AGENT" --db-path ./chroma_db --record-attack --vuln-class SQLi \
-      --endpoint https://app/rest/search --method POST --param q \
-      --payload "' OR 1=1--" --status 500 --verdict vulnerable --severity high
+    # Pivots
+    "$JQ" get <id>                                   # collection auto-detected
+    "$JQ" similar <id>
+    "$JQ" identifier 42                              # same record, any endpoint
 
-    # Find every document (any collection) that referenced a specific id/uuid
-    "$PY" "$AGENT" --db-path ./chroma_db --identifier 42
+    # Findings
+    "$JQ" record-attack --vuln-class SQLi --endpoint https://app/api/search \
+      --method GET --param q --payload "' OR 1=1--" --status 500 \
+      --verdict vulnerable --severity high
+    "$JQ" attacks --vuln-class SQLi
 
-See the `jeb-query` skill for the full filterable-field reference.
+Every command prints one JSON object with `count`, results, `notes` and `next`;
+`next` names the follow-up commands with real ids already filled in.
 
-Retrieval controls:
+Sizing is one flag: `--depth quick|normal|deep` (or `--limit N`). If a search
+returns nothing, `fallback` carries the closest matches with the relevance
+cutoff disabled.
 
-- `--candidate-k`: candidates requested from dense and lexical retrieval.
-- `--top-k` / `--n-results`: hard maximum final result count.
-- `--max-distance`: maximum dense cosine distance; collection defaults apply.
-- `--min-score`: minimum normalized fused relevance score from 0 to 1.
-- `--top-p`: smallest result prefix covering this cumulative relevance mass;
-  this is deterministic retrieval selection, not LLM token sampling.
-- `--min-results`: result floor before `top_p` can stop selection.
-- `--max-per-endpoint`: diversity cap for repeated host/endpoint results.
+`structure` and `behavior` index **protocol structure only** — methods, path
+templates, parameter names, statuses, content types, auth roles and mechanisms,
+cookies, missing security headers, CORS, JWT claims. They hold no vulnerability
+vocabulary, so terms like `sqli` or `ssrf` are stripped from a search and
+reported in `rejected_terms`. Vulnerability classes live in `attacks` as
+`vuln_class`. Hunt by structural signal instead — see the `jeb-query` skill, and
+the signal table in the J.E.B.E.D.I.A.H. agent.
+
+## The J.E.B.E.D.I.A.H. agent
+
+`install-skills.sh` also installs an OpenCode agent to
+`~/.config/opencode/agent/jebediah.md`. Switch to it with the **Tab** key.
+
+It carries the pentesting methodology: start from `endpoint` whenever a route is
+named, map vulnerability classes onto the structural signals the index actually
+holds, correlate by entity and identifier, and record every test result — including
+the negative ones.
 
 ## Visualize
 

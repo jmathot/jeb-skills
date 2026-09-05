@@ -1,251 +1,173 @@
 ---
 name: jeb-query
-description: Query step for J.E.B. — hunt for vulnerabilities across a Burp capture mapped into three ChromaDB collections (structure, behavior, attacks). USE WHEN searching/querying an already-imported Burp database, hunting vulns, mapping the site/endpoints, semantic search over request/response behavior, filtering by metadata or raw header/cookie substrings, correlating endpoints that share a data structure or an identifier value, recording attack results, or deep-diving a specific doc by id. To first parse and embed a Burp XML export, use the jeb-import skill.
+description: Query step for J.E.B. — investigate a specific endpoint or URL from an imported Burp Suite capture, map the site, search request/response behavior, correlate endpoints by data shape or identifier value, and record or recall findings by vulnerability class. USE WHEN asked to look at an endpoint or path, map an app, find endpoints reachable anonymously, inspect cookies/headers/auth/CORS, chase an id across endpoints, or log an attack result. To first parse and embed a Burp XML export, use the jeb-import skill.
 ---
 
 # J.E.B. — Query / Hunting Interface (v4)
 
-This skill queries a ChromaDB populated by the **`jeb-import`** skill. If the
-database does not exist yet, run `jeb-import` first.
+Queries a ChromaDB built by the **`jeb-import`** skill. If the database does not
+exist yet, run `jeb-import` first.
 
-Every command below starts with the same fixed prefix — run it exactly as shown,
-in full, every time; do not shorten it or store it in a variable, since a shell
-variable set in one command is **not** available in the next command:
+Every command starts with this prefix. Run it in full every time — a shell
+variable set in one command is **not** available in the next:
 ```
 ~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh
 ```
 
-**Always query the database belonging to the project you are working on.** Run
-from the project directory so `./chroma_db` resolves to that project's DB, or pass
-`--db-path <project_dir>/chroma_db`. Data from separate projects is never mixed.
+Run from the project directory so `./chroma_db` resolves to that project's
+database, or pass `--db-path <project_dir>/chroma_db`. Projects never mix.
 
-## The three collections (`--collection`)
+## Pick your command
 
-- **`structure`** — the site map: endpoint templates, pages, actions, and one
-  per-origin `auth_model` node. Start here to understand the app and to find
-  broken-access-control candidates.
-- **`behavior`** (default) — one doc per distinct request/response behavior.
-- **`attacks`** — results of your active testing, written by `record-attack`.
+| Situation | Command |
+|---|---|
+| The user named an endpoint, path or URL | `endpoint /api/orders` |
+| You want the site map | `map` |
+| You are describing behavior in words | `search "password reset token"` |
+| You want a filtered list, no words | `search --in structure --anon` |
+| You have a document id | `get <id>` |
+| You want more like this document | `similar <id>` |
+| You have a concrete id/uuid value | `identifier 42` |
+| You finished testing something | `record-attack --vuln-class ... --endpoint ...` |
+| You want findings you already logged | `attacks --vuln-class SQLi` |
 
-## How search works
+Every command prints one JSON object with `count`, `results`/`matches`, `notes`
+and `next`. Read `next` — it names the follow-up commands with real ids in them.
 
-- semantic `--query` matches route, response, and access concepts,
-- lexical retrieval recovers exact endpoints, parameters, and protocol terms,
-- `--where` filters metadata facets (equality / `$in` / numeric ranges),
-- `--where-document` substring-matches the **raw** HTTP (behavior/attacks) or
-  the node report text (structure).
+## What is NOT in the index
 
-Always wrap the entire `--where`/`--where-document` JSON value in single quotes
-(as in every example below), even for a one-field filter. Results are ranked by
-a fused `score` (higher = better).
+`structure` and `behavior` store **protocol structure only**: methods, path
+templates, parameter names, status codes, content types, auth roles and
+mechanisms, cookie names and flags, missing security headers, CORS posture, JWT
+alg and claims.
 
-### Retrieval controls
-
-- `--candidate-k 40`: candidates requested from each retrieval path.
-- `--top-k 8` (alias `--n-results`): hard maximum returned results.
-- `--max-distance`: maximum dense cosine distance. Defaults are collection-specific.
-- `--min-score 0.0`: minimum normalized fused relevance score from 0 to 1.
-- `--top-p 0.90`: return the smallest ranked prefix covering 90% of available
-  relevance mass, after `--min-results` is satisfied. This is deterministic
-  retrieval selection, not an LLM generation sampling parameter.
-- `--min-results 3`: minimum result floor before `top_p` can stop selection.
-- `--max-per-endpoint 2`: diversity limit per `(host, endpoint_template)`.
-
-The defaults above are fine for most searches — leave them out unless tuning
-precision or recall. Push `--candidate-k`/`--top-k`/`--top-p` up for broader
-recall, down for tighter precision:
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --query "password reset token" \
-  --candidate-k 30 --top-k 5 --top-p 0.80 --min-score 0.35
-```
+They contain **no vulnerability names**. Never put words like `sqli`,
+`xss`, `ssrf`, `idor`, `csrf`, `rce` or `vulnerability` into `search` — they are
+stripped before the query runs and reported back in `rejected_terms`. To
+investigate a vulnerability, search for its *structural signal* (a parameter
+name, a 500 status, an anonymous 200) or start from `endpoint`. Vulnerability
+classes exist only in `attacks`, as the `vuln_class` field.
 
 ---
 
-## 1. Map the app (`--collection structure`)
+## 1. `endpoint <path|url>` — start here
 
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --collection structure \
-  --query "authentication and account management"
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh endpoint /api/orders
 ```
-Read the per-origin **auth model** node (`--where '{"node_kind":"auth_model"}'`) to
-see which cookies are set vs consumed where, the token type, and the app-wide
-missing-header posture.
+Accepts `/api/orders`, `/api/orders/42` or `https://app/api/orders?limit=10` —
+concrete ids are normalised to the stored template automatically.
 
-**Broken access control** — endpoints reachable without credentials:
+You get back: every matching route with its parameters, auth posture, cookies
+sent and set, missing security headers and CORS; the origin's **auth model**;
+sub-paths and sibling routes; **entity links** to routes sharing the same data
+shape; the behavior documents it was seen in; and the **raw request/response**
+of one representative exchange.
+
+Flags: `--host`, `--method`, `--depth quick|normal|deep`, `--no-raw`.
+
+## 2. `map` — the site map
+
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --collection structure \
-  --query "admin or sensitive endpoint" --where '{"anon_allowed": true}'
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh map
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh map --kind auth_model
 ```
+`--kind` is `page`, `endpoint`, `action`, `auth_model` or `entity`.
 
-`anon_allowed: true` means an anonymous request actually **received application
-data** (real broken access control) — it is content-aware, so a "200 OK that
-returns the login page" (a *soft auth wall*) is **not** flagged. Those are marked
-`access_control: soft-auth-wall` instead. Find soft walls (endpoints that are
-protected but answer 200 with a login/deny page) separately:
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --collection structure \
-  --where '{"access_control": "soft-auth-wall"}'
-```
-`anon_matches_auth: true` on a behavior doc is the strongest signal: the anon
-response matched the authenticated response byte-for-structure.
-
-**Correlate endpoints that share a data structure** — find every route reading
-or writing the same underlying object (e.g. does anything else touch the "user"
-that `POST /users/edit` writes?). Every `structure` route node carries
-`entity_ids`, pointing at synthetic `node_kind: "entity"` nodes built by
-grouping every endpoint's response/request-body JSON/XML key-schema across the
-**whole app** (not just within one route). Query the entity directly, or pivot
-from a route's `entity_ids`:
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --collection structure \
-  --where '{"node_kind": "entity"}' --query "user"
-```
-An entity node's `produced_by`/`consumed_by` list every `METHOD endpoint_template`
-that returns/writes that shape — e.g. `produced_by: GET /users/{id}` and
-`consumed_by: POST /users/edit` means both touch the same record shape. This is
-**structural** correlation (same/overlapping fields), confidence boosted by
-`related` fuzzy matches (Jaccard-overlapping key sets) noted in the entity's
-`page_content` when schemas are close but not identical. For **instance-level**
-proof that two requests touched the *same record* (not just the same shape), use
-`--identifier` (§6) to match on an actual id/uuid value shared between them.
-
-### `structure` filterable fields
-- `doc_kind` (str): always `structure`
-- `node_kind` (str): `page` | `endpoint` | `action` | `auth_model` | `entity`
-- `scheme`, `host`, `endpoint_template`, `method` (str), `port` (int)
-- `param_names` (str, csv), `produces` (str, csv content types)
-- `status_codes` (str, csv), `path_depth` (int), `instance_count` (int)
-- `authenticated_ever` (bool), `anon_allowed` (bool — anon received real data)
-- `anon_soft_denied` (bool — anon got a 200 login/deny surrogate)
-- `access_control` (str): `open-data` (real BAC) | `soft-auth-wall` | `enforced`
-  (saw 401/403) | `unknown`
-- `auth_mechanisms` (str, csv), `cookies_sent` (str, csv), `cookies_set` (str, csv)
-- `security_headers_missing` (str, csv), `cors` (str: `*`/`reflected`/`null`/`specific`)
-- `is_static` (bool), `example_ids` (str, csv — behavior ids to pivot into)
-- `entity_ids` (str, csv — on a route node: which `entity` node(s) its
-  request/response shape belongs to)
-- `schema_sig`, `identifier_field`, `produced_by`, `consumed_by` (str — on
-  `node_kind: "entity"` nodes only; see above)
-
----
-
-## 2. Hunt behavior (`--collection behavior`, default)
+## 3. `search [text]` — hybrid search, or a pure filter
 
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db \
-  --query "password reset token in response" --where '{"method": "POST"}'
+# words: matched against route, response and access concepts
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search "password reset token" --method POST
+
+# no words: a pure metadata filter
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search --in structure --anon
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search --status '>=500' --param q
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search --contains "Access-Control-Allow-Origin: *"
 ```
 
-Numeric fields support ranges — server errors with large bodies:
+`--in structure|behavior|attacks` (default `behavior`). Static js/css/image
+noise is excluded automatically; pass `--include-static` to keep it.
+
+Filters: `--host`, `--method`, `--path`, `--status 500|'>=500'|500-599|5xx`,
+`--anon`, `--auth`, `--param`, `--cookie`, `--missing-header csp`, `--cors-open`,
+`--contains`, `--kind`, `--access-control`, `--access-class`,
+`--anon-matches-auth`, `--cookie-issues`, `--jwt`.
+
+Sizing: `--depth quick|normal|deep` (default `normal`), or `--limit N`. If a
+search returns nothing, read `fallback` — those are the closest matches with the
+relevance cutoff disabled — or retry with `--loose`.
+
+**Access control.** `--anon` on `structure` means an anonymous request actually
+**received application data** (real broken access control). A "200 OK that
+returns the login page" is not flagged; find those with
+`--access-control soft-auth-wall`. On `behavior`, `--anon-matches-auth` is the
+strongest signal: the anonymous response matched the authenticated one.
+
+## 4. `get <id>` / `similar <id>`
+
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --query "server error stack trace" \
-  --where '{"$and": [{"status_code": {"$gte": 500}}, {"resp_len": {"$gte": 5000}}]}'
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh get <id>
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh similar <id> --limit 10
 ```
+`get` returns full metadata plus the raw request/response (or the node report for
+`structure`). The collection is detected from the id — you never need to say it.
 
-Filter on **raw** header/cookie text with `--where-document` (substring, case
-sensitive):
+## 5. `identifier <value>` — same record, different endpoint
+
 ```bash
-# CORS wildcard responses
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --query "cross origin api" \
-  --where-document '{"$contains": "Access-Control-Allow-Origin: *"}'
-
-# Session cookies without SameSite
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --query "session cookie" \
-  --where-document '{"$contains": "Set-Cookie"}'
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh identifier 42
 ```
+Every document, in any collection, that referenced that concrete id/uuid/hash —
+in a URL path segment or a JSON field named `id`, `*_id`, `uuid` or `guid`.
+Entity links (from `endpoint`) prove two routes share a data *shape*;
+`identifier` proves they touched the same *record*. That pairing is the evidence
+for an IDOR/BOLA chain: write through one route, read it back through the other.
 
-Use `{"is_static": false}` to drop js/css/image noise.
+## 6. `record-attack` / `attacks`
 
-### `behavior` filterable fields
-- `doc_kind` (str): always `behavior`
-- `scheme`, `host`, `endpoint_template`, `method` (str), `port` (int)
-- `status_code` (int, ranges), `resp_len` (int, ranges)
-- `param_names` (str, csv), `param_count` (int)
-- `req_content_type`, `resp_content_type` (str)
-- `is_static` (bool), `instance_count` (int), `time` (str)
-- `access_class` (str): `data` | `auth_wall` | `shell` | `denied` | `redirect` |
-  `empty` | `static` — what the response actually delivered
-- `anon_matches_auth` (bool — anon response matched the authenticated one)
-- `authenticated` (bool), `auth_role` (str), `auth_mechanism` (str:
-  `cookie-session`/`bearer-jwt`/`bearer-opaque`/`basic`/`api-key-header`/`custom-header`/`none`)
-- `cookie_names` (str, csv — sent), `set_cookies` (str, csv — name+flags)
-- `cookie_issues` (str, csv — e.g. `SID:no-httponly,no-samesite`)
-- `security_headers_missing` (str, csv), `cors` (str, e.g. `* creds`)
-- `jwt` (str, e.g. `alg=none;claims=sub,role,exp`), `redirect_location` (str)
-
-> Compact csv fields (`cookie_issues`, `security_headers_missing`, …) support
-> equality / `$in` only. For precise substring matching, use `--where-document`
-> against the raw HTTP.
-
----
-
-## 3. Deep dive / recall by id (`--id`)
-
+Log every active test, including the ones that found nothing.
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --collection behavior --id <document_id>
-```
-Returns the full metadata and the raw request/response (or the node report for
-`structure`). Use `example_ids` from a `structure` node to jump to its behaviors.
-
-## 4. Find similar (`--similar-to <id>`)
-
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --similar-to <document_id> --n-results 10
-```
-Nearest neighbours by the canonical stored vector — the "more like this" pivot. Honours
-`--where`, `--where-document`, `--n-results`.
-
-## 5. Record an attack result (`--record-attack`)
-
-After actively testing a request, persist the outcome to the `attacks`
-collection so it is searchable and remembered across sessions. **Required:
-`--vuln-class` and `--endpoint`. Every other flag below is optional**
-(`--verdict` defaults to `inconclusive`).
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --record-attack \
-  --vuln-class SQLi --endpoint "https://app/rest/products/search" --method GET \
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh record-attack \
+  --vuln-class SQLi --endpoint "https://app/api/search" --method GET \
   --param q --payload "' OR 1=1--" --status 500 --verdict vulnerable \
-  --severity high --source-id <behavior_id> \
-  --evidence "SQLSyntaxErrorException" \
+  --severity high --source-id <behavior_id> --evidence "SQLSyntaxErrorException" \
   --request-file req.txt --response-file resp.txt
 ```
-Verdicts: `vulnerable` | `not_vulnerable` | `inconclusive`. Query them back with
-`--collection attacks --query "..."` or `--where '{"verdict":"vulnerable"}'`.
+Required: `--vuln-class`, `--endpoint`. Verdicts: `vulnerable` |
+`not_vulnerable` | `inconclusive` (default).
 
-### `attacks` filterable fields
-- `doc_kind` (str): always `attack`
-- `vuln_class`, `verdict`, `severity` (str)
-- `host`, `endpoint_template`, `method`, `param` (str)
-- `status_code` (int), `source_behavior_id` (str), `payload` (str), `tool` (str), `time` (str)
-
-## 6. Correlate by identifier value (`--identifier`)
-
-Entity nodes (§1) prove two endpoints share a data *shape*; `--identifier` proves
-they touched the same *record*. It's an exact-match lookup across every
-collection for a concrete id/uuid/hash value seen in a URL path segment or a
-JSON field named like an identifier (`id`, `*_id`, `uuid`, `guid`):
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh \
-  --db-path ./chroma_db --identifier 42
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh attacks --vuln-class SQLi
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh attacks --verdict vulnerable
 ```
-Returns every `{id, collection, field}` hit, regardless of `--collection` —
-e.g. a `behavior` doc for `GET /users/42` and another for `POST /users/edit`
-whose body contained `"user_id": "42"`. Pivot into each with `--id <id>
---collection <collection>` to read the full raw request/response. This is the
-concrete version of the "does this POST edit the same user this GET returned"
-question: matching `entity_ids` says probably (same shape); a matching
-`--identifier` says yes (same record) — strong evidence for chaining an
-IDOR/BOLA test (edit as one user, read back via the other endpoint to confirm
-impact).
+
+---
+
+## Field reference
+
+**`structure`** — `node_kind` (`page`|`endpoint`|`action`|`auth_model`|`entity`),
+`scheme`, `host`, `port`, `endpoint_template`, `method`, `param_names` (csv),
+`produces`, `status_codes`, `path_depth`, `instance_count`,
+`authenticated_ever`, `anon_allowed`, `anon_soft_denied`, `access_control`
+(`open-data`|`soft-auth-wall`|`enforced`|`unknown`), `auth_mechanisms`,
+`cookies_sent`, `cookies_set`, `security_headers_missing`, `cors`, `is_static`,
+`example_ids`, `entity_ids`. Entity nodes add `schema_sig`, `identifier_field`,
+`produced_by`, `consumed_by`.
+
+**`behavior`** — `scheme`, `host`, `port`, `endpoint_template`, `method`,
+`status_code`, `resp_len`, `param_names`, `param_count`, `req_content_type`,
+`resp_content_type`, `is_static`, `instance_count`, `time`, `access_class`
+(`data`|`auth_wall`|`shell`|`denied`|`redirect`|`empty`|`static`|`other`),
+`anon_matches_auth`, `authenticated`, `auth_role`, `auth_mechanism`,
+`req_features` (`origin-cross-site`, `csrf-token`, `custom-auth-header`,
+`host=…`), `cookie_names`, `set_cookies`, `cookie_issues`,
+`security_headers_missing`, `cors`, `jwt`, `redirect_location`.
+
+**`attacks`** — `vuln_class`, `verdict`, `severity`, `host`,
+`endpoint_template`, `method`, `param`, `status_code`, `source_behavior_id`,
+`payload`, `tool`, `time`.
+
+> `cors` is stored as the bare posture on `structure` (`*`, `reflected`, `null`,
+> `specific`) but with a `" creds"` suffix on `behavior` when credentials are
+> allowed. Use `--cors-open`, which matches every permissive spelling in both.

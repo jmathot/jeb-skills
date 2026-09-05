@@ -37,7 +37,7 @@ internal behaviors explain fields you'll see later when querying with
 
 - **Raw headers are kept, not embedded.** `parse.py` retains broad raw headers
   (only browser-hint noise like `sec-ch-ua*`/`sec-fetch-*` is stripped) for
-  `jeb-query`'s `--where-document` substring search, even though headers never
+  `jeb-query`'s `--contains` substring search, even though headers never
   go into the embedding text.
 - **Content-aware access classification.** `normalize.py` labels each response
   `data` / `auth_wall` / `shell` / `denied` so a "200 OK that returns the login
@@ -45,7 +45,7 @@ internal behaviors explain fields you'll see later when querying with
   what powers `jeb-query`'s `anon_allowed` / `access_control` fields.
 - **Identifier extraction.** `normalize.py` pulls id/uuid/hash-shaped values from
   URL path segments and identifier-named JSON fields (`id`, `*_id`, `uuid`,
-  `guid`) into an exact-match index — this is what `jeb-query`'s `--identifier`
+  `guid`) into an exact-match index — this is what `jeb-query`'s `identifier`
   looks up.
 
 Every embedded document is also indexed in project-local SQLite FTS5 for hybrid

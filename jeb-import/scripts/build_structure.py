@@ -248,6 +248,7 @@ def auth_model_chunk(origin, model):
         'instance_count': 1,
         'path_depth': 0,
         'example_ids': '',
+        'entity_ids': '',
         'granularity': 'parent',
         'summary': summary,
     }
@@ -354,7 +355,7 @@ def entity_chunk(entity, entity_id):
             'page_content': "\n".join(pc), 'metadata': metadata}
 
 
-def build_segments(nodes, auth_models, entity_of=None):
+def build_segments(nodes, auth_models, entity_of=None, entities=None):
     chunks = []
     for node in nodes:
         parent = endpoint_chunk(node, entity_of)
@@ -375,6 +376,17 @@ def build_segments(nodes, auth_models, entity_of=None):
                          'granularity': 'segment'})
         chunks.append({
             'id': d.md5(f"{parent['id']}|auth_model"),
+            'embed_text': parent['embed_text'],
+            'page_content': parent['embed_text'],
+            'metadata': metadata,
+        })
+    for entity in (entities or []):
+        parent = entity_chunk(entity, (entity_of or {})[entity['schema_sig']])
+        metadata = dict(parent['metadata'])
+        metadata.update({'parent_id': parent['id'], 'representation': 'entity',
+                         'granularity': 'segment'})
+        chunks.append({
+            'id': d.md5(f"{parent['id']}|entity"),
             'embed_text': parent['embed_text'],
             'page_content': parent['embed_text'],
             'metadata': metadata,
@@ -402,7 +414,7 @@ def main():
         chunks.append(entity_chunk(entity, entity_of[entity['schema_sig']]))
     n_parents = len(chunks)
 
-    chunks += build_segments(nodes, auth_models, entity_of)
+    chunks += build_segments(nodes, auth_models, entity_of, entities)
 
     with open(args.output, 'w') as f:
         json.dump(chunks, f, indent=2)

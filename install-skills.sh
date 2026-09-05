@@ -1,11 +1,13 @@
 #!/bin/bash
-# Install jeb-import and jeb-query skills to OpenCode config directory
+# Install the jeb-import and jeb-query skills, and the J.E.B.E.D.I.A.H.
+# agent, into the OpenCode config directory.
 
 set -e
 
 # Define paths
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPENCODE_SKILL_DIR="${HOME}/.config/opencode/skill"
+OPENCODE_AGENT_DIR="${HOME}/.config/opencode/agent"
 
 # Skills to install
 SKILLS=("jeb-import" "jeb-query")
@@ -41,6 +43,13 @@ for skill in "${SKILLS[@]}"; do
     echo "  ✓ $skill installed successfully"
 done
 
+# The agent is what the user switches to with Tab; it carries the pentesting
+# methodology that must not live in the vector index.
+echo "Installing the J.E.B.E.D.I.A.H. agent..."
+mkdir -p "$OPENCODE_AGENT_DIR"
+cp "$SOURCE_DIR/agent/jebediah.md" "$OPENCODE_AGENT_DIR/jebediah.md"
+echo "  ✓ agent installed to $OPENCODE_AGENT_DIR/jebediah.md"
+
 echo ""
 echo "✓ All skills installed successfully!"
 echo ""
@@ -48,3 +57,5 @@ echo "Skills are now available at:"
 for skill in "${SKILLS[@]}"; do
     echo "  - $OPENCODE_SKILL_DIR/$skill"
 done
+echo ""
+echo "Switch to the J.E.B.E.D.I.A.H. agent in OpenCode with the Tab key."
