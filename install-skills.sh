@@ -8,6 +8,7 @@ set -e
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPENCODE_SKILL_DIR="${HOME}/.config/opencode/skill"
 OPENCODE_AGENT_DIR="${HOME}/.config/opencode/agent"
+AGENT_FILENAME="J.E.B.E.D.I.A.H..md"
 
 # Skills to install
 SKILLS=("jeb-import" "jeb-query")
@@ -47,8 +48,11 @@ done
 # methodology that must not live in the vector index.
 echo "Installing the J.E.B.E.D.I.A.H. agent..."
 mkdir -p "$OPENCODE_AGENT_DIR"
-cp "$SOURCE_DIR/agent/jebediah.md" "$OPENCODE_AGENT_DIR/jebediah.md"
-echo "  ✓ agent installed to $OPENCODE_AGENT_DIR/jebediah.md"
+if [ -f "$OPENCODE_AGENT_DIR/jebediah.md" ]; then
+    rm "$OPENCODE_AGENT_DIR/jebediah.md"
+fi
+cp "$SOURCE_DIR/agent/$AGENT_FILENAME" "$OPENCODE_AGENT_DIR/$AGENT_FILENAME"
+echo "  ✓ agent installed to $OPENCODE_AGENT_DIR/$AGENT_FILENAME"
 
 echo ""
 echo "✓ All skills installed successfully!"

@@ -57,7 +57,7 @@ def reconstruct_raw(item) -> str:
     return "\n".join(parts)
 
 
-def pass_a(items):
+def pass_a(items, auth_cookie_names=None):
     annotated = []
     for item in items:
         url = item.get('url', '')
@@ -80,7 +80,8 @@ def pass_a(items):
         req_ct = d.header_get(req_headers, 'content-type').split(';', 1)[0].strip().lower()
         resp_ct = d.resp_media_type(resp_headers)
         param_names = d.extract_param_names(method, url, req_ct, req_body)
-        reqf = d.request_features(method, url, req_headers, param_names)
+        reqf = d.request_features(method, url, req_headers, param_names,
+                                   auth_cookie_names)
         req_origin = d.header_get(req_headers, 'origin')
 
         req_schema_sig, req_schema_keys = '', []
@@ -321,12 +322,16 @@ def main():
     ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 2: normalise + annotate")
     ap.add_argument('input_file', nargs='?', default='parsed_traffic.json')
     ap.add_argument('-o', '--output', default=None)
+    ap.add_argument('--auth-cookies', action='append', default=[],
+                    help='additional authentication/session cookie names; '
+                         'repeat or comma-separate')
     args = ap.parse_args()
 
     with open(args.input_file) as f:
         items = json.load(f)
 
-    annotated = pass_a(items)
+    auth_cookie_names = d.normalize_auth_cookie_names(args.auth_cookies)
+    annotated = pass_a(items, auth_cookie_names)
     pass_b_spa(annotated)
     boilerplate = pass_c_boilerplate(annotated)
     pass_access(annotated)

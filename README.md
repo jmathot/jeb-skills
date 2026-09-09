@@ -112,7 +112,7 @@ the signal table in the J.E.B.E.D.I.A.H. agent.
 ## The J.E.B.E.D.I.A.H. agent
 
 `install-skills.sh` also installs an OpenCode agent to
-`~/.config/opencode/agent/jebediah.md`. Switch to it with the **Tab** key.
+`~/.config/opencode/agent/J.E.B.E.D.I.A.H..md`. Switch to it with the **Tab** key.
 
 It carries the pentesting methodology: start from `endpoint` whenever a route is
 named, map vulnerability classes onto the structural signals the index actually

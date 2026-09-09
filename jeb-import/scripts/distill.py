@@ -330,6 +330,22 @@ def cookie_names_from_request(headers: dict):
     return out
 
 
+def normalize_auth_cookie_names(names):
+    """Return validated, lowercased custom authentication cookie names."""
+    out = set()
+    for value in names or ():
+        for name in str(value).split(','):
+            name = name.strip()
+            if not name:
+                continue
+            if '=' in name or ';' in name:
+                raise ValueError(
+                    f"invalid authentication cookie name {name!r}: "
+                    "names must not contain '=' or ';'")
+            out.add(name.lower())
+    return out
+
+
 def parse_jwt(token: str) -> dict:
     """Return {alg, claims:[names], role} for a JWT; values suppressed."""
     out = {'alg': '', 'claims': [], 'role': ''}
@@ -363,7 +379,7 @@ def parse_jwt(token: str) -> dict:
     return out
 
 
-def _primary_credential(headers: dict):
+def _primary_credential(headers: dict, auth_cookie_names=None):
     """Return (mechanism, token_or_value) for the strongest credential seen."""
     authz = header_get(headers, 'authorization')
     if authz:
@@ -386,22 +402,24 @@ def _primary_credential(headers: dict):
         if kl not in ('cookie',) and v.strip() and any(s in kl for s in AUTH_HEADER_SIGNALS):
             return ('custom-header', '')
 
-    # Session/auth cookie.
+    # Session/auth cookie. Custom names are scoped to the current import.
+    recognized_cookie_names = AUTH_COOKIE_NAMES | set(auth_cookie_names or ())
     for v in header_all(headers, 'cookie'):
         for part in v.split(';'):
             part = part.strip()
             if '=' not in part:
                 continue
             name, val = part.split('=', 1)
-            if name.strip().lower() in AUTH_COOKIE_NAMES or _looks_like_jwt(val.strip()):
+            if name.strip().lower() in recognized_cookie_names or _looks_like_jwt(val.strip()):
                 return ('cookie-session', val.strip())
     return ('none', '')
 
 
-def request_features(method: str, url: str, headers: dict, param_names):
+def request_features(method: str, url: str, headers: dict, param_names,
+                     auth_cookie_names=None):
     """Value-suppressed request credential/header features."""
     req_host = (urlparse(url).hostname or '').lower()
-    mechanism, token = _primary_credential(headers)
+    mechanism, token = _primary_credential(headers, auth_cookie_names)
     authenticated = mechanism != 'none'
 
     role = ''

@@ -15,7 +15,7 @@ When the user asks you to process, ingest, or vectorize a new export:
    intermediate data and the ChromaDB are written to the **project directory**
    (the current working directory by default, or an explicit second argument):
    ```bash
-   ~/.config/opencode/skill/jeb-import/scripts/process_burp.sh <path_to_burp_xml> [project_dir]
+    ~/.config/opencode/skill/jeb-import/scripts/process_burp.sh [--auth-cookies NAME[,NAME...]] <path_to_burp_xml> [project_dir]
    ```
    This produces `parsed_<name>.json`, `annotated_<name>.json`,
    `structure_<name>.json`, `behavior_<name>.json`, and `chroma_db/` inside the
