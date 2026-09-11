@@ -15,7 +15,7 @@ When the user asks you to process, ingest, or vectorize a new export:
    intermediate data and the ChromaDB are written to the **project directory**
    (the current working directory by default, or an explicit second argument):
    ```bash
-    ~/.config/opencode/skill/jeb-import/scripts/process_burp.sh [--auth-cookies NAME[,NAME...]] <path_to_burp_xml> [project_dir]
+    ~/.config/opencode/skill/jeb-import/scripts/process_burp.sh [--auth-cookies NAME[,NAME...]] [--no-auto-detect-auth-cookies] <path_to_burp_xml> [project_dir]
    ```
    This produces `parsed_<name>.json`, `annotated_<name>.json`,
    `structure_<name>.json`, `behavior_<name>.json`, and `chroma_db/` inside the
@@ -47,6 +47,12 @@ internal behaviors explain fields you'll see later when querying with
   URL path segments and identifier-named JSON fields (`id`, `*_id`, `uuid`,
   `guid`) into an exact-match index — this is what `jeb-query`'s `identifier`
   looks up.
+- **Auto-detected login cookies.** `normalize.py` watches for a POST to a
+  login-like path whose response is not a 4xx/5xx and doesn't itself look
+  like another login/auth-wall page, and registers any cookie it sets as an
+  authentication cookie for the rest of the run — no `--auth-cookies` flag
+  needed in the common case. Pass `--no-auto-detect-auth-cookies` to disable
+  this and rely solely on manually-specified `--auth-cookies` names.
 
 Every embedded document is also indexed in project-local SQLite FTS5 for hybrid
 semantic + exact-term retrieval. Collections use explicit cosine distance.

@@ -632,6 +632,76 @@ def html_login_signals(body: str) -> dict:
             'text_signal': text_signal, 'is_login': is_login}
 
 
+def _cookie_is_cleared(value: str) -> bool:
+    """True if a Set-Cookie value clears/expires a cookie (Max-Age<=0, or an
+    Expires date in the past — deletions conventionally use the Unix epoch)
+    rather than establishing a session."""
+    for attr in value.split(';')[1:]:
+        attr = attr.strip()
+        low = attr.lower()
+        if low.startswith('max-age='):
+            try:
+                if int(attr.split('=', 1)[1].strip()) <= 0:
+                    return True
+            except ValueError:
+                pass
+        elif low.startswith('expires=') and '1970' in attr:
+            return True
+    return False
+
+
+def detect_login_cookie_names(items):
+    """Auto-detect session-cookie names established by a successful login.
+
+    Moderate-strictness heuristic, run as a pre-pass over raw parsed items
+    (before pass_a): a candidate is a POST to a login-like path
+    (is_login_path). Its paired response (Burp pairs request/response 1:1
+    per item) counts as a successful login if the status is not 4xx/5xx and
+    the body does not itself still look like a login/auth-wall page
+    (html_login_signals / json_auth_wall), excluding a failed-login
+    re-render of the form. Every Set-Cookie name from that response is
+    registered, unless the cookie is being cleared (Max-Age<=0 / epoch
+    Expires). Only cookie names are returned — never values.
+    """
+    detected = set()
+    for item in items:
+        if (item.get('method') or '').upper() != 'POST':
+            continue
+        path = urlparse(item.get('url', '')).path
+        if not is_login_path(path):
+            continue
+
+        status = _to_int(item.get('status', ''))
+        if status // 100 in (4, 5):
+            continue
+
+        resp = item.get('response', {}) or {}
+        resp_headers = resp.get('headers', {}) or {}
+        resp_body = resp.get('body', '') or ''
+
+        if html_login_signals(resp_body)['is_login']:
+            continue
+        if json_auth_wall(resp_body):
+            continue
+
+        for raw in header_all(resp_headers, 'set-cookie'):
+            # parse.py joins repeated Set-Cookie header instances into one
+            # '\n'-joined dict value; split them back out before parsing.
+            for value in raw.split('\n'):
+                value = value.strip()
+                if not value:
+                    continue
+                parsed = _parse_set_cookie(value)
+                if not parsed:
+                    continue
+                if _cookie_is_cleared(value):
+                    continue
+                name, _flags = parsed
+                if name:
+                    detected.add(name.strip().lower())
+    return detected
+
+
 def classify_response(status_code, resp_headers, resp_body, resp_ct, file_ext,
 
                       mimetype=''):

@@ -325,12 +325,22 @@ def main():
     ap.add_argument('--auth-cookies', action='append', default=[],
                     help='additional authentication/session cookie names; '
                          'repeat or comma-separate')
+    ap.add_argument('--no-auto-detect-auth-cookies', dest='auto_detect_auth_cookies',
+                    action='store_false', default=True,
+                    help='disable automatic detection of session cookies set by a '
+                         'successful login POST (enabled by default)')
     args = ap.parse_args()
 
     with open(args.input_file) as f:
         items = json.load(f)
 
     auth_cookie_names = d.normalize_auth_cookie_names(args.auth_cookies)
+    if args.auto_detect_auth_cookies:
+        detected_cookie_names = d.detect_login_cookie_names(items)
+        if detected_cookie_names:
+            print(f"Auto-detected {len(detected_cookie_names)} login session "
+                  f"cookie name(s): {', '.join(sorted(detected_cookie_names))}")
+        auth_cookie_names |= detected_cookie_names
     annotated = pass_a(items, auth_cookie_names)
     pass_b_spa(annotated)
     boilerplate = pass_c_boilerplate(annotated)

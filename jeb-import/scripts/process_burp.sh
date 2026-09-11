@@ -6,16 +6,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="$SCRIPT_DIR/venv/bin/python"
 
 usage() {
-    echo "Usage: $0 [--auth-cookies NAME[,NAME...]] <burp_export_xml> [project_dir]"
+    echo "Usage: $0 [--auth-cookies NAME[,NAME...]] [--no-auto-detect-auth-cookies] <burp_export_xml> [project_dir]"
     echo ""
-    echo "  --auth-cookies     Additional authentication/session cookie names."
-    echo "  <burp_export_xml>  Path to the Burp Suite XML export."
-    echo "  [project_dir]      Directory where intermediate JSON and chroma_db"
-    echo "                     are written. Defaults to the current directory."
+    echo "  --auth-cookies                 Additional authentication/session cookie names."
+    echo "  --no-auto-detect-auth-cookies  Disable automatic login-cookie detection (on by default)."
+    echo "  <burp_export_xml>              Path to the Burp Suite XML export."
+    echo "  [project_dir]                  Directory where intermediate JSON and chroma_db"
+    echo "                                 are written. Defaults to the current directory."
     exit 1
 }
 
 AUTH_COOKIE_ARGS=()
+AUTO_DETECT_FLAG=()
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -33,6 +35,10 @@ while [ "$#" -gt 0 ]; do
                 usage
             fi
             AUTH_COOKIE_ARGS+=("${1#*=}")
+            shift
+            ;;
+        --no-auto-detect-auth-cookies)
+            AUTO_DETECT_FLAG=(--no-auto-detect-auth-cookies)
             shift
             ;;
         --help|-h)
@@ -89,6 +95,7 @@ NORMALIZE_ARGS=("$PARSED_JSON" -o "$ANNOTATED_JSON")
 for auth_cookies in "${AUTH_COOKIE_ARGS[@]}"; do
     NORMALIZE_ARGS+=(--auth-cookies "$auth_cookies")
 done
+NORMALIZE_ARGS+=("${AUTO_DETECT_FLAG[@]}")
 "$PYTHON" "$SCRIPT_DIR/normalize.py" "${NORMALIZE_ARGS[@]}"
 
 echo "Step 3/5: Building the 'structure' collection (site map + entities + semantic segments) ..."
