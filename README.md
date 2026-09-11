@@ -123,13 +123,29 @@ the negative ones.
 
     ~/.config/opencode/skill/jeb-import/scripts/venv/bin/pip install \
       -r ~/.config/opencode/skill/jeb-import/scripts/requirements-viz.txt
+
+The visualizer has two modes, both self-contained interactive HTML.
+
+`--mode embedding` (default) — the vector-space scatter (UMAP/t-SNE/PCA)
+covering canonical and semantic segment documents (distinguished by the
+`granularity` metadata field within each collection), plus collection
+schema/metric reporting, representation coverage, orphan detection,
+parent-child cosine-distance analysis, and cluster diagnostics:
+
     ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
       ~/.config/opencode/skill/jeb-import/scripts/visualize.py \
       --db-path ./chroma_db --collection all --color-by collection \
       --out vector_space.html
 
-The v4 visualizer includes canonical and semantic segment documents (distinguished
-by the `granularity` metadata field within each collection), collection
-schema/metric reporting, representation coverage, orphan detection, parent-child
-cosine-distance analysis, and cluster diagnostics. Use `--collection canonical`
-or `--collection segments` for focused views.
+Use `--collection canonical` or `--collection segments` for focused views.
+
+`--mode graph` — the `structure` collection as a site map: pages, endpoints
+and actions laid out as a tree under each host's auth_model root, entity
+nodes wired to the endpoints that produce/consume them, colored by
+`access_control` posture. If the `attacks` collection has any recorded
+tests, endpoints get a ring colored by their worst verdict (`--no-attacks`
+to turn that off):
+
+    ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
+      ~/.config/opencode/skill/jeb-import/scripts/visualize.py \
+      --db-path ./chroma_db --mode graph --out site_map.html

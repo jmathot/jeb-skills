@@ -38,8 +38,10 @@ its parameters, auth posture, cookies, headers, CORS, its neighbours, the routes
 that share its data shape, and a raw request/response. Do not compose a search
 query for an endpoint you can name.
 
-Otherwise: `map` to orient, then `map --kind auth_model` to learn how sessions
-work, then `endpoint` on whatever looks interesting.
+Otherwise: `map --kind endpoint` to orient, then `map --kind auth_model` to
+learn how sessions work, then `endpoint` on whatever looks interesting. Scope
+`map` with `--kind` — an unscoped `map` on a large capture dumps far more than
+you need to decide where to look next.
 
 ## The index holds structure, not vulnerabilities
 
@@ -69,19 +71,57 @@ signal**, then reason about it:
 | CSRF | state-changing methods with cookie auth whose `req_features` lacks `csrf-token` |
 | Missing hardening | `search --in structure --missing-header hsts` |
 
+If a structural-signal search comes back empty, that is not evidence the
+signal is absent. Read `fallback` (the closest matches with the relevance
+cutoff disabled) or retry with `--loose` before you conclude a class doesn't
+apply to this app.
+
+## Hunting priorities
+
+On a fresh target, work down this order rather than chasing whatever the map
+happened to list first. Each tier finds higher-impact bugs than the one below
+it, and a medium-effort pass should exhaust a tier before dropping to the next:
+
+1. **Auth boundary anomalies** — `--access-control soft-auth-wall`,
+   `--anon-matches-auth`, `--anon` on `structure`. These mean the access
+   control model itself is broken, not just one endpoint.
+2. **IDOR / BOLA shape** — routes with `{id}`/`{uuid}` templates, especially
+   ones with `related_by_entity` pairing a reader and a writer.
+3. **State-changing methods with weak CSRF posture** — `POST`/`PUT`/`DELETE`
+   using cookie auth where `req_features` lacks `csrf-token`.
+4. **Injection signals** — 5xx with a param, `--contains` on known error
+   strings, suspicious param names for SSRF.
+5. **CORS / session / JWT posture** — `--cors-open`, `--cookie-issues`,
+   `--jwt`.
+6. **Hardening gaps** (missing CSP/HSTS/etc.) — lowest priority; these rarely
+   stand alone as a finding and are cheap to check last.
+
 ## Workflow
 
-1. **Recon** — `map`, then `map --kind auth_model`.
-2. **Target** — `endpoint <path>` for each route worth attention.
+1. **Recon** — `map --kind endpoint`, then `map --kind auth_model`.
+2. **Target** — `endpoint <path>` for each route worth attention, following
+   the priority order above.
 3. **Deep dive** — `get <id>` for the full raw exchange when the truncated one
    in the report is not enough.
 4. **Correlate** — `related_by_entity` for routes sharing a shape; `identifier
    <value>` for routes touching the same record; `similar <id>` for more of the
    same kind.
-5. **Test** — only what the user has authorized, against the live target.
-6. **Record** — `record-attack` after **every** test, including the ones that
+5. **Corroborate before you escalate** — don't call something a finding off a
+   single query. Confirm a hypothesis with at least one follow-up (`get`,
+   `similar`, or `identifier`) before proposing an active test or writing it
+   up.
+6. **Test** — only what the user has authorized, and only against the scope
+   and target they named. Blanket authorization to test an endpoint does not
+   cover destructive or high-volume methods (`DELETE`, bulk writes, anything
+   that behaves like a load test) — confirm those specifically before running
+   them, since they risk the live target rather than just the local capture.
+7. **Record** — `record-attack` after **every** test, including the ones that
    found nothing. `--verdict not_vulnerable` is valuable; it stops you and the
    user retreading ground. Recall with `attacks --vuln-class ...`.
+
+Every command's response includes `next` — the real follow-up commands, with
+real ids already filled in. Prefer those over composing your own next query;
+they reflect what the tool actually found, not what you're guessing is there.
 
 ## Reporting
 
