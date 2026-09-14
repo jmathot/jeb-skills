@@ -309,6 +309,15 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
             report['examples'] = [
                 _example_view(i, metas[i])
                 for i in example_ids if i in metas][:budget['examples']]
+            variant_ids = list(dict.fromkeys(
+                variant_id for example in report['examples']
+                for variant_id in example.get('variant_ids', [])))
+            if variant_ids:
+                variant_docs = agent.get_many(
+                    variant_ids[:budget['examples']], collection_name='behavior')
+                report['variants'] = [
+                    _example_view(i, variant_docs[i]['metadata'])
+                    for i in variant_ids if i in variant_docs][:budget['examples']]
             if raw_budget:
                 report['raw_example'] = _raw_example(agent, metas, raw_budget)
         elif example_ids:
@@ -330,10 +339,18 @@ def _example_view(doc_id, meta):
         'access_class': meta.get('access_class', ''),
         'anon_matches_auth': meta.get('anon_matches_auth'),
         'req_features': meta.get('req_features', ''),
+        'param_names': _csv_list(meta.get('param_names')),
+        'req_content_type': meta.get('req_content_type', ''),
+        'req_schema_keys': _csv_list(meta.get('req_schema_keys')),
+        'graphql_operation': meta.get('graphql_operation', ''),
+        'resp_class': meta.get('resp_class', ''),
+        'resp_content_type': meta.get('resp_content_type', ''),
+        'resp_body_sha256': meta.get('resp_body_sha256', ''),
         'cookie_issues': _csv_list(meta.get('cookie_issues')),
         'set_cookies': _csv_list(meta.get('set_cookies')),
         'jwt': meta.get('jwt', ''),
         'summary': meta.get('summary', ''),
+        'variant_ids': _csv_list(meta.get('variant_ids')),
     }
 
 

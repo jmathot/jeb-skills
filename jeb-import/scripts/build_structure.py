@@ -2,8 +2,8 @@
 J.E.B. v2 — Phase 3b: build the `structure` collection (the site map).
 
 Aggregates annotated items into one node per (host, method, endpoint_template)
-— SPA shells collapse to a single per-host node — and emits one synthetic
-`auth_model` node per host summarising the session/auth model across endpoints.
+  and emits one synthetic `auth_model` node per host summarising the
+  session/auth model across endpoints.
 """
 import argparse
 import json
@@ -20,8 +20,6 @@ def _csv(v):
 
 
 def _node_kind(template, method, produces):
-    if template == '{spa-shell}':
-        return 'page'
     if method == 'GET' and any('html' in p for p in produces):
         return 'page'
     if method in ('POST', 'PUT', 'PATCH', 'DELETE'):
@@ -51,13 +49,13 @@ def _union_identifier_pairs(items):
             if pair not in seen:
                 seen.add(pair)
                 out.append(pair)
-    return out[:d.IDENTIFIER_CAP]
+    return out
 
 
 def build_endpoint_nodes(annotated):
     groups = OrderedDict()
     for a in annotated:
-        template = '{spa-shell}' if a['resp_class'] == 'spa_shell' else a['endpoint_template']
+        template = a['endpoint_template']
         key = (a['scheme'], a['host'], a['port'], a['method'], template)
         groups.setdefault(key, []).append(a)
 
@@ -201,6 +199,7 @@ def endpoint_chunk(node, entity_of=None):
     node_id = d.md5(f"{node['scheme']}|{node['host']}|{node['port']}|"
                     f"{node['method']}|{node['endpoint_template']}|{node['node_kind']}")
     return {'id': node_id, 'embed_text': embed_text,
+            'embedding_title': node.get('page_title', ''),
             'page_content': "\n".join(pc), 'metadata': metadata,
             'identifier_pairs': node.get('identifier_pairs', [])}
 
@@ -366,6 +365,7 @@ def build_segments(nodes, auth_models, entity_of=None, entities=None):
             chunks.append({
                 'id': d.md5(f"{parent['id']}|{representation}"),
                 'embed_text': text,
+                'embedding_title': parent.get('embedding_title', ''),
                 'page_content': text,
                 'metadata': metadata,
             })

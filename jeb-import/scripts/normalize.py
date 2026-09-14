@@ -73,13 +73,16 @@ def pass_a(items, auth_cookie_names=None):
         resp = item.get('response', {})
         req_headers = req.get('headers', {})
         resp_headers = resp.get('headers', {})
-        req_body = req.get('body', '')
-        resp_body = resp.get('body', '')
+        req_body = (req.get('analysis_body', '') if req.get('body_kind') == 'text'
+                    else req.get('body', ''))
+        resp_body = (resp.get('analysis_body', '') if resp.get('body_kind') == 'text'
+                     else resp.get('body', ''))
         method = item.get('method', '')
 
         req_ct = d.header_get(req_headers, 'content-type').split(';', 1)[0].strip().lower()
         resp_ct = d.resp_media_type(resp_headers)
         param_names = d.extract_param_names(method, url, req_ct, req_body)
+        graphql_operation = d.graphql_operation(req_body, url)
         reqf = d.request_features(method, url, req_headers, param_names,
                                    auth_cookie_names)
         req_origin = d.header_get(req_headers, 'origin')
@@ -87,11 +90,16 @@ def pass_a(items, auth_cookie_names=None):
         req_schema_sig, req_schema_keys = '', []
         if req_body and ('json' in req_ct or 'xml' in req_ct):
             req_schema_sig, _, req_schema_keys = d.structured_schema(req_body, req_ct)
-        identifiers = d.extract_identifier_values(endpoint, [req_body, resp_body])
+        identifiers = d.extract_identifier_values(
+            endpoint, [req_body, resp_body], url, [req_ct, resp_ct])
 
         status_code = d._to_int(item.get('status', ''))
-        resp_class = d.classify_response(status_code, resp_headers, resp_body,
-                                         resp_ct, file_ext, item.get('mimetype', ''))
+        body_kind = resp.get('body_kind', 'text')
+        if body_kind in ('binary', 'undecodable'):
+            resp_class = body_kind
+        else:
+            resp_class = d.classify_response(status_code, resp_headers, resp_body,
+                                             resp_ct, file_ext, item.get('mimetype', ''))
         is_static = d.is_static_asset(item.get('mimetype', ''), file_ext, resp_ct)
 
         is_html = resp_class in ('html_document', 'spa_shell')
@@ -105,15 +113,28 @@ def pass_a(items, auth_cookie_names=None):
             'file_ext': file_ext,
             'req_content_type': req_ct, 'resp_content_type': resp_ct,
             'param_names': param_names, 'param_count': len(param_names),
+            'graphql_operation': graphql_operation,
             'req_schema_sig': req_schema_sig, 'req_schema_keys': req_schema_keys,
+            'request_variant_sig': d.request_variant_signature(req_body, req_ct),
             'identifiers': identifiers,
             'req_features': reqf,
             '_req_origin': req_origin,
             '_resp_headers': resp_headers,
             '_resp_body': resp_body,
             'resp_class': resp_class,
+            'response_variant_sig': d.response_variant_signature(
+                resp_class, resp_body, resp_ct,
+                d.header_get(resp_headers, 'location')),
             'is_static': is_static,
             'resp_len': d._to_int(item.get('responselength', ''), len(resp_body)),
+            'req_body_sha256': req.get('body_sha256', ''),
+            'resp_body_sha256': resp.get('body_sha256', ''),
+            'req_body_length': req.get('body_length', len(req_body)),
+            'resp_body_length': resp.get('body_length', len(resp_body)),
+            'req_body_truncated': bool(req.get('truncated')),
+            'resp_body_truncated': bool(resp.get('truncated')),
+            'req_decode_error': req.get('decode_error', ''),
+            'resp_decode_error': resp.get('decode_error', ''),
             'raw': reconstruct_raw(item),
             '_body_hash': d.md5(resp_body) if is_html else '',
             '_is_shell_heuristic': (is_html and d.is_spa_shell_html(resp_body)),
@@ -147,22 +168,24 @@ def pass_b_spa(annotated):
 
 
 def pass_c_boilerplate(annotated):
-    """Per-host DOM blocks appearing on >50% of pages become boilerplate."""
-    pages_by_host = defaultdict(list)
+    """Per-host DOM blocks appearing on >50% of distinct routes are boilerplate."""
+    pages_by_host = defaultdict(dict)
     for a in annotated:
         if a['resp_class'] == 'html_document':
-            pages_by_host[(a['scheme'], a['host'], a['port'])].append(a)
+            origin = (a['scheme'], a['host'], a['port'])
+            pages_by_host[origin].setdefault(a['endpoint_template'], set()).update(
+                a['_html_blocks'])
 
     boilerplate = {}
-    for origin, pages in pages_by_host.items():
-        if len(pages) < BOILERPLATE_MIN_PAGES:
+    for origin, route_blocks in pages_by_host.items():
+        if len(route_blocks) < BOILERPLATE_MIN_PAGES:
             boilerplate[origin] = set()
             continue
         freq = defaultdict(int)
-        for a in pages:
-            for block in a['_html_blocks']:
+        for blocks in route_blocks.values():
+            for block in blocks:
                 freq[block] += 1
-        cutoff = len(pages) * BOILERPLATE_FRACTION
+        cutoff = len(route_blocks) * BOILERPLATE_FRACTION
         boilerplate[origin] = {b for b, c in freq.items() if c > cutoff}
     return boilerplate
 
@@ -180,8 +203,9 @@ def pass_d_distill(annotated, boilerplate):
         a['resp_schema_keys'] = schema_keys
         # page title for structure page nodes
         a['page_title'] = ''
-        if a['resp_class'] == 'html_document' and distilled.startswith('page: '):
-            a['page_title'] = distilled[6:].split(' | ', 1)[0][:120]
+        page_marker = distilled.find('page: ')
+        if a['resp_class'] in ('html_document', 'spa_shell') and page_marker >= 0:
+            a['page_title'] = distilled[page_marker + 6:].split(' | ', 1)[0][:120]
         # drop bulky temp fields
         for k in ('_resp_headers', '_resp_body', '_body_hash',
                   '_is_shell_heuristic', '_html_blocks', '_req_origin', '_content_fp'):
@@ -245,9 +269,13 @@ def _content_fp(a):
     body = a.get('_resp_body', '')
     rc = a['resp_class']
     if rc == 'api_structured':
-        return d.structured_schema(body, a.get('resp_content_type', ''))[0]
-    if rc in ('html_document', 'text_other'):
-        return d.page_fingerprint(body)
+        return a.get('response_variant_sig', '')
+    if rc == 'html_document':
+        return d.md5(d.page_fingerprint(body) + '|' + d.html_page_summary(body))
+    if rc == 'text_other':
+        return d.md5(body)
+    if rc in ('redirect', 'empty', 'binary', 'undecodable'):
+        return a.get('resp_body_sha256', '') or d.md5(body)
     return ''
 
 
@@ -267,6 +295,10 @@ def _access_class(a, login_fps):
         return 'empty'
     if rc == 'static_asset':
         return 'static'
+    if rc in ('binary', 'undecodable'):
+        if a.get('is_static'):
+            return 'static'
+        return 'data' if 200 <= sc < 300 else 'other'
     if rc == 'html_document':
         fp = d.page_fingerprint(body)
         if (fp and fp in login_fps) or d.html_login_signals(body)['is_login']:

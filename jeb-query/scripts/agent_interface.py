@@ -43,8 +43,8 @@ for _candidate in (
         break
 if _here not in sys.path:
     sys.path.insert(0, _here)
-from embedding import (COLLECTION_SCHEMA, DISTANCE_METRIC, EMBEDDING_SCHEME,
-                       make_ollama_ef, embed_query, embed_documents)  # noqa: E402
+from embedding import (EMBEDDING_PROFILE_METADATA, embed_documents, embed_query,
+                       make_ollama_ef)  # noqa: E402
 import distill as d  # noqa: E402
 
 DEFAULT_DB_PATH = "./chroma_db"
@@ -79,8 +79,10 @@ FACETS = {
                   'instance_count', 'example_ids', 'entity_ids',
                   'schema_sig', 'identifier_field', 'produced_by', 'consumed_by'],
     'behavior': ['method', 'scheme', 'host', 'port', 'endpoint_template',
-                 'status_code', 'resp_len', 'resp_content_type',
-                 'authenticated', 'auth_role', 'auth_mechanism', 'access_class',
+                  'status_code', 'resp_len', 'resp_content_type',
+                  'resp_class', 'req_schema_sig', 'req_schema_keys',
+                  'graphql_operation', 'variant_count', 'variant_ids',
+                  'authenticated', 'auth_role', 'auth_mechanism', 'access_class',
                  'anon_matches_auth', 'param_names', 'req_features',
                  'cors', 'cookie_issues', 'set_cookies', 'jwt',
                  'security_headers_missing', 'redirect_location', 'instance_count'],
@@ -194,17 +196,15 @@ class JebAgent:
         elif create_if_missing:
             self.collection = self.client.create_collection(
                 name=collection_name, embedding_function=self.ollama_ef,
-                metadata={"embedding_scheme": EMBEDDING_SCHEME,
-                          "collection_schema": COLLECTION_SCHEMA,
-                          "hnsw:space": DISTANCE_METRIC})
+                metadata=dict(EMBEDDING_PROFILE_METADATA))
         else:
             raise MissingCollection(collection_name, sorted(have))
         meta = self.collection.metadata or {}
-        self.prefixed = meta.get("embedding_scheme") == EMBEDDING_SCHEME
-        if not self.prefixed:
-            print("[jeb-query] Note: DB uses an older embedding scheme; "
-                  "using raw query text. Re-run jeb-import into a fresh chroma_db.",
-                  file=sys.stderr)
+        if any(meta.get(key) != value
+               for key, value in EMBEDDING_PROFILE_METADATA.items()):
+            raise ValueError(
+                f"Collection '{collection_name}' does not match the current "
+                "EmbeddingGemma profile. Delete chroma_db and re-run jeb-import.")
 
         # structure/behavior carry both 'parent' (canonical) and 'segment'
         # (semantic child) documents in one collection, distinguished by the
@@ -398,12 +398,36 @@ class JebAgent:
                 for doc_id, meta in zip(got['ids'], got['metadatas'])]
         for predicate in (post or []):
             rows = [r for r in rows if predicate(r[1])]
+
+        matched_variants = {}
+        if self.collection_name == 'behavior' and (where or where_document or post):
+            variant_where = self._and_where(where, {'granularity': 'variant'})
+            variant_kwargs = {'include': ['metadatas'], 'limit': max(1, int(scan_cap)),
+                              'where': variant_where}
+            if where_document:
+                variant_kwargs['where_document'] = where_document
+            variants = self.collection.get(**variant_kwargs)
+            variant_parent_ids = []
+            for variant_id, meta in zip(variants['ids'], variants['metadatas']):
+                meta = meta or {}
+                if all(predicate(meta) for predicate in (post or [])):
+                    parent_id = meta.get('parent_id', '')
+                    variant_parent_ids.append(parent_id)
+                    matched_variants.setdefault(parent_id, []).append(variant_id)
+            existing_ids = {doc_id for doc_id, _meta in rows}
+            variant_parents = self.get_many(variant_parent_ids)
+            rows.extend((doc_id, entry['metadata'])
+                        for doc_id, entry in variant_parents.items()
+                        if doc_id not in existing_ids)
         total = len(rows)
         key = sort_key or (lambda item: (-int(item[1].get('instance_count', 0) or 0),
                                          item[0]))
         rows.sort(key=key)
         results = [self._summarize(doc_id, meta, None, snippet_len)
                    for doc_id, meta in rows[:max(1, int(n_results))]]
+        for result in results:
+            if result['id'] in matched_variants:
+                result['matched_variants'] = matched_variants[result['id']]
         return {'results': results, 'total': total}
 
     # -- hybrid search -----------------------------------------------------
@@ -429,17 +453,15 @@ class JebAgent:
             granularity = ({'$or': [{'granularity': 'segment'},
                                     {'node_kind': 'entity'}]}
                            if self.collection_name == 'structure'
-                           else {'granularity': 'segment'})
+                           else {'$or': [{'granularity': 'segment'},
+                                        {'granularity': 'variant'}]})
             kwargs['where'] = self._and_where(where, granularity)
         elif where:
             kwargs['where'] = where
         if where_document and not self.has_segments:
             kwargs['where_document'] = where_document
-        if self.prefixed:
-            kwargs['query_embeddings'] = [embed_query(
-                self.ollama_ef, self.collection_name, query)]
-        else:
-            kwargs['query_texts'] = [query]
+        kwargs['query_embeddings'] = [embed_query(
+            self.ollama_ef, self.collection_name, query)]
         dense = self.collection.query(**kwargs)
 
         if max_distance is None:
@@ -465,12 +487,13 @@ class JebAgent:
                 parent_id = (meta or {}).get('parent_id', doc_id)
                 entry = into.setdefault(parent_id, {
                     'rrf': 0.0, 'distance': distance, 'sources': set(),
-                    'representations': set(),
+                    'representations': set(), 'matched_ids': set(),
                 })
                 if source not in entry['sources']:
                     entry['rrf'] += 1.0 / (RRF_K + rank)
                 entry['distance'] = min(entry['distance'], distance)
                 entry['sources'].add(source)
+                entry['matched_ids'].add(doc_id)
                 representation = (meta or {}).get('representation')
                 if representation:
                     entry['representations'].add(representation)
@@ -482,12 +505,11 @@ class JebAgent:
             raw_kwargs = {'n_results': candidate_k,
                           'include': ['metadatas', 'distances'],
                           'where_document': where_document,
-                          'where': self._and_where(where, {'granularity': 'parent'})}
-            if self.prefixed:
-                raw_kwargs['query_embeddings'] = [embed_query(
-                    self.ollama_ef, self.collection_name, query)]
-            else:
-                raw_kwargs['query_texts'] = [query]
+                          'where': self._and_where(
+                              where, {'$or': [{'granularity': 'parent'},
+                                             {'granularity': 'variant'}]})}
+            raw_kwargs['query_embeddings'] = [embed_query(
+                self.ollama_ef, self.collection_name, query)]
             raw_filter = self.collection.query(**raw_kwargs)
             merge_dense(raw_filter, 'dense_raw_filter', candidates, max_distance,
                         count=True)
@@ -499,7 +521,7 @@ class JebAgent:
         for rank, parent_id in enumerate(lexical, 1):
             entry = candidates.setdefault(parent_id, {
                 'rrf': 0.0, 'distance': None, 'sources': set(),
-                'representations': set(),
+                'representations': set(), 'matched_ids': set(),
             })
             entry['rrf'] += 1.0 / (RRF_K + rank)
             entry['sources'].add('lexical')
@@ -547,11 +569,35 @@ class JebAgent:
                 'diagnostics': diag, 'fallback': []}
 
     def _rank(self, candidates, query, where, where_document, post=None):
-        eligible = self._eligible_parents(list(candidates), where, where_document)
+        eligible = self._eligible_parents(list(candidates), None, None)
+        matching_children = {}
+        for parent_id, candidate in candidates.items():
+            child_ids = [doc_id for doc_id in candidate.get('matched_ids', set())
+                         if doc_id != parent_id]
+            if not child_ids:
+                continue
+            kwargs = {'ids': child_ids, 'include': ['metadatas']}
+            if where:
+                kwargs['where'] = where
+            if where_document:
+                kwargs['where_document'] = where_document
+            got = self.collection.get(**kwargs)
+            matched = [doc_id for doc_id, meta in zip(got['ids'], got['metadatas'])
+                       if (meta or {}).get('granularity') == 'variant'
+                       and all(predicate(meta or {}) for predicate in (post or []))]
+            if matched:
+                matching_children[parent_id] = matched
         query_terms = {t.lower() for t in re.findall(r"[A-Za-z0-9_{}.-]+", query)}
         ranked = []
         for parent_id, meta in eligible.items():
-            if any(not predicate(meta) for predicate in (post or [])):
+            parent_matches = True
+            if where or where_document:
+                parent_matches = parent_id in self._eligible_parents(
+                    [parent_id], where, where_document)
+            child_matches = matching_children.get(parent_id, [])
+            if not parent_matches and not child_matches:
+                continue
+            if any(not predicate(meta) for predicate in (post or [])) and not child_matches:
                 continue
             entry = candidates[parent_id]
             facet_text = " ".join(str(meta.get(field, '')) for field in (
@@ -562,6 +608,8 @@ class JebAgent:
             entry['raw_score'] = entry['rrf'] + 0.01 * overlap
             entry['id'] = parent_id
             entry['metadata'] = meta
+            if child_matches:
+                entry['matched_variants'] = child_matches
             ranked.append(entry)
         ranked.sort(key=lambda x: (-x['raw_score'],
                                    x['distance'] if x['distance'] is not None else math.inf,
@@ -575,6 +623,8 @@ class JebAgent:
         item['sources'] = sorted(entry['sources'])
         if entry['representations']:
             item['representations'] = sorted(entry['representations'])
+        if entry.get('matched_variants'):
+            item['matched_variants'] = entry['matched_variants']
         return item
 
     # -- pivots ------------------------------------------------------------
@@ -680,13 +730,9 @@ class JebAgent:
             'time': now, 'granularity': 'parent', 'summary': summary,
         }
         doc_id = d.md5(f"{now}|{template}|{record['param']}|{record['payload']}")
-        embedding = embed_documents(self.ollama_ef, [embed_text])[0] if self.prefixed else None
-        if embedding is not None:
-            self.collection.upsert(ids=[doc_id], documents=[page_content],
-                                   metadatas=[metadata], embeddings=[embedding])
-        else:
-            self.collection.upsert(ids=[doc_id], documents=[page_content],
-                                   metadatas=[metadata])
+        embedding = embed_documents(self.ollama_ef, [embed_text])[0]
+        self.collection.upsert(ids=[doc_id], documents=[page_content],
+                               metadatas=[metadata], embeddings=[embedding])
         self._upsert_lexical(doc_id, 'attacks', embed_text)
         self._upsert_identifiers(doc_id, 'attacks',
                                  d.extract_identifier_values(

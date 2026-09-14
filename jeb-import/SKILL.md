@@ -23,8 +23,10 @@ When the user asks you to process, ingest, or vectorize a new export:
    - **First use only:** if it errors that the venv is missing, run the two
      setup commands the error prints (creates a venv shared with `jeb-query`
      and installs `requirements.txt`), then re-run the command above.
-   - Prerequisite: [Ollama](https://ollama.com/) must be running locally with
-     the `embeddinggemma:latest` model pulled (embedding is done via Ollama).
+   - Prerequisite: [Ollama](https://ollama.com/) 0.11.10 or newer must be
+     running locally with the `embeddinggemma:latest` model pulled. J.E.B. uses
+     EmbeddingGemma's full 768-dimensional output and its 2,048-token context.
+     Embedding calls intentionally allow up to 60 minutes for slow local hosts.
 
 ## Pipeline stages
 
@@ -39,6 +41,13 @@ internal behaviors explain fields you'll see later when querying with
   (only browser-hint noise like `sec-ch-ua*`/`sec-fetch-*` is stripped) for
   `jeb-query`'s `--contains` substring search, even though headers never
   go into the embedding text.
+- **Full analysis, bounded evidence.** Textual request and response bodies are
+  decoded before classification and schema/identifier extraction. Stored raw
+  evidence is bounded to 64 KiB per body, with structured previews or head/tail
+  text retained for larger bodies; gzip, deflate, and Brotli are supported.
+- **Dynamic variants survive collapse.** Canonical behavior documents still
+  summarize repeated traffic, but materially different request/response shapes
+  are retained as raw variant children and surfaced by endpoint/search results.
 - **Content-aware access classification.** `normalize.py` labels each response
   `data` / `auth_wall` / `shell` / `denied` so a "200 OK that returns the login
   page" (a soft auth wall) is never mistaken for real anonymous access. This is
@@ -65,12 +74,10 @@ The `attacks` collection starts empty and is written during hunting by
 
 ## Notes
 
-- Re-running against the same `project_dir` is cheap and safe: unchanged
-  documents are skipped and only changed ones are re-embedded.
-- v4 folds `structure_segments`/`behavior_segments` into `structure`/`behavior`
-  (a `granularity` metadata field replaces the separate collections) and adds
-  entity nodes + the identifier index. A v3 `chroma_db/` has no `granularity`
-  field on its documents, so v4's queries would silently return nothing against
-  it — delete an older project's `chroma_db/` before its first v4 import.
+- The normal usage is one capture and one disposable `chroma_db` per project.
+  After this skill's schema or embedding profile changes, delete `chroma_db/`
+  and re-import the original Burp export; old databases are not migrated.
+- Re-running an unchanged capture against the same current-profile database
+  skips unchanged documents.
 - If a collection ends up empty, confirm Ollama is running and
   `embeddinggemma:latest` is pulled (`ollama pull embeddinggemma:latest`).

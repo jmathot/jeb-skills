@@ -16,13 +16,11 @@ import time
 
 import chromadb
 
-os.environ.setdefault('OLLAMA_TIMEOUT', '3600')
-os.environ.setdefault('HTTPX_TIMEOUT', '3600')
-
-from embedding import (COLLECTION_SCHEMA, DISTANCE_METRIC, EMBEDDING_SCHEME,
-                       make_ollama_ef, embed_documents)
+from embedding import (COLLECTION_SCHEMA, EMBEDDING_PROFILE_METADATA,
+                       embed_documents, make_ollama_ef)
 
 MAX_BATCH_CHARS = 10000
+MAX_BATCH_DOCS = 32
 
 
 def resolve_db_path(input_file, db_path_arg):
@@ -50,6 +48,7 @@ def serialize_meta(meta):
 def content_hash(chunk, metadata):
     material = json.dumps({
         'embed_text': chunk['embed_text'],
+        'embedding_title': chunk.get('embedding_title', ''),
         'page_content': chunk['page_content'],
         'metadata': metadata,
     }, sort_keys=True, separators=(',', ':'))
@@ -66,6 +65,8 @@ def update_lexical_index(db_path, collection_name, chunks):
         )
         for chunk in chunks:
             parent_id = chunk.get('metadata', {}).get('parent_id', chunk['id'])
+            title = chunk.get('embedding_title', '')
+            text = f"{title} | {chunk['embed_text']}" if title else chunk['embed_text']
             conn.execute(
                 "DELETE FROM retrieval_fts WHERE doc_id = ? AND collection_name = ?",
                 (chunk['id'], collection_name),
@@ -73,7 +74,7 @@ def update_lexical_index(db_path, collection_name, chunks):
             conn.execute(
                 "INSERT INTO retrieval_fts(doc_id, collection_name, parent_id, text) "
                 "VALUES (?, ?, ?, ?)",
-                (chunk['id'], collection_name, parent_id, chunk['embed_text']),
+                (chunk['id'], collection_name, parent_id, text),
             )
 
 
@@ -154,7 +155,7 @@ def store(collection, chunks, ollama_ef):
     while idx < n:
         batch_num += 1
         batch, chars = [], 0
-        while idx < n:
+        while idx < n and len(batch) < MAX_BATCH_DOCS:
             size = len(pending[idx]['embed_text'])
             if batch and chars + size > MAX_BATCH_CHARS:
                 break
@@ -162,10 +163,11 @@ def store(collection, chunks, ollama_ef):
             chars += size
             idx += 1
         embed_texts = [c['embed_text'] for c in batch]
+        embedding_titles = [c.get('embedding_title', '') for c in batch]
         documents = [c['page_content'] for c in batch]
         metadatas = [c['metadata'] for c in batch]
         ids = [c['id'] for c in batch]
-        embeddings = embed_documents(ollama_ef, embed_texts)
+        embeddings = embed_documents(ollama_ef, embed_texts, embedding_titles)
         upsert_with_retry(collection, documents, embeddings, metadatas, ids)
         total += len(batch)
         bar_len = 40
@@ -195,20 +197,17 @@ def main():
 
     ollama_ef = make_ollama_ef()
     client = chromadb.PersistentClient(path=db_path)
-    collection_meta = {"embedding_scheme": EMBEDDING_SCHEME,
-                       "collection_schema": COLLECTION_SCHEMA,
-                       "hnsw:space": DISTANCE_METRIC}
+    collection_meta = dict(EMBEDDING_PROFILE_METADATA)
     existing_names = {c.name for c in client.list_collections()}
     if args.collection in existing_names:
         collection = client.get_collection(args.collection,
                                            embedding_function=ollama_ef)
         meta = collection.metadata or {}
-        if meta.get('embedding_scheme') != EMBEDDING_SCHEME or \
-                meta.get('hnsw:space') != DISTANCE_METRIC:
+        if any(meta.get(key) != value for key, value in collection_meta.items()):
             raise SystemExit(
-                f"Collection '{args.collection}' uses an incompatible embedding "
-                f"scheme or distance metric. Rebuild this project's chroma_db "
-                f"before importing with {COLLECTION_SCHEMA}.")
+                f"Collection '{args.collection}' does not match the current "
+                f"EmbeddingGemma profile. Delete this project's chroma_db and "
+                f"re-import it with {COLLECTION_SCHEMA}.")
     else:
         collection = client.create_collection(
             name=args.collection,

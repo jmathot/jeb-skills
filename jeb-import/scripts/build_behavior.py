@@ -31,18 +31,30 @@ def _union_identifier_pairs(items):
             if pair not in seen:
                 seen.add(pair)
                 out.append(pair)
-    return out[:d.IDENTIFIER_CAP]
+    return out
 
 
 def _representative(items):
-    """Choose the response nearest the group's median size, then the richest."""
-    lengths = sorted(i.get('resp_len', 0) for i in items)
-    median = lengths[len(lengths) // 2]
+    """Choose the most analyzable and information-rich exchange."""
     return min(items, key=lambda i: (
-        abs(i.get('resp_len', 0) - median),
+        bool(i.get('resp_decode_error')),
+        bool(i.get('resp_body_truncated')),
+        -len(i.get('resp_schema_keys', [])),
         -len(i.get('resp_distilled', '')),
         -len(i.get('raw', '')),
+        i.get('time', ''),
     ))
+
+
+def _variant_groups(items):
+    groups = OrderedDict()
+    for item in items:
+        groups.setdefault(d.behavior_variant_key(item), []).append(item)
+    return groups
+
+
+def _variant_id(parent_id, key):
+    return d.md5(parent_id + '|variant|' + json.dumps(key, sort_keys=True))
 
 
 def build(annotated):
@@ -54,6 +66,10 @@ def build(annotated):
     chunks = []
     for key, items in groups.items():
         rep = _representative(items)
+        variant_groups = _variant_groups(items)
+        variant_ids = ([_variant_id(d.behavior_id(rep), variant_key)
+                        for variant_key in variant_groups]
+                       if len(variant_groups) > 1 else [])
         reqf, respf = rep['req_features'], rep['resp_features']
         example_urls = list(OrderedDict.fromkeys(i['url'] for i in items))[:5]
         instance_count = len(items)
@@ -77,7 +93,11 @@ def build(annotated):
             'param_names': _csv(rep['param_names']),
             'param_count': rep['param_count'],
             'req_content_type': rep['req_content_type'],
+            'req_schema_sig': rep.get('req_schema_sig', ''),
+            'req_schema_keys': _csv(rep.get('req_schema_keys', [])),
+            'graphql_operation': rep.get('graphql_operation', ''),
             'resp_content_type': rep['resp_content_type'],
+            'resp_class': rep.get('resp_class', ''),
             'is_static': rep['is_static'],
             'resp_len': rep['resp_len'],
             'instance_count': instance_count,
@@ -97,10 +117,16 @@ def build(annotated):
             'req_features': _csv(reqf['req_features_csv']),
             'jwt': reqf['jwt'],
             'redirect_location': respf['redirect_location'],
+            'resp_body_sha256': rep.get('resp_body_sha256', ''),
+            'resp_body_truncated': rep.get('resp_body_truncated', False),
+            'resp_decode_error': rep.get('resp_decode_error', ''),
+            'variant_count': len(variant_groups),
+            'variant_ids': _csv(variant_ids),
             'granularity': 'parent',
             'summary': summary,
         }
         chunks.append({'id': d.behavior_id(rep), 'embed_text': embed_text,
+                       'embedding_title': rep.get('page_title', ''),
                        'page_content': page_content, 'metadata': metadata,
                        'identifier_pairs': _union_identifier_pairs(items)})
     return chunks
@@ -123,8 +149,52 @@ def build_segments(annotated):
             chunks.append({
                 'id': d.md5(f"{parent_id}|{representation}"),
                 'embed_text': text,
+                'embedding_title': rep.get('page_title', ''),
                 'page_content': text,
                 'metadata': metadata,
+            })
+    return chunks
+
+
+def build_variants(annotated):
+    groups = OrderedDict()
+    for a in annotated:
+        groups.setdefault(d.behavior_collapse_key(a), []).append(a)
+
+    chunks = []
+    for items in groups.values():
+        parent_rep = _representative(items)
+        parent_id = d.behavior_id(parent_rep)
+        variants = _variant_groups(items)
+        if len(variants) <= 1:
+            continue
+        for key, variant_items in variants.items():
+            rep = _representative(variant_items)
+            metadata = dict(build([rep])[0]['metadata'])
+            metadata.update({
+                'parent_id': parent_id,
+                'representation': 'variant',
+                'granularity': 'variant',
+                'instance_count': len(variant_items),
+                'param_names': _csv(rep.get('param_names', [])),
+                'req_content_type': rep.get('req_content_type', ''),
+                'req_schema_sig': rep.get('req_schema_sig', ''),
+                'req_schema_keys': _csv(rep.get('req_schema_keys', [])),
+                'graphql_operation': rep.get('graphql_operation', ''),
+                'resp_content_type': rep.get('resp_content_type', ''),
+                'resp_class': rep.get('resp_class', ''),
+                'resp_body_sha256': rep.get('resp_body_sha256', ''),
+                'resp_body_truncated': rep.get('resp_body_truncated', False),
+                'resp_decode_error': rep.get('resp_decode_error', ''),
+                'summary': d.behavior_summary(rep),
+            })
+            chunks.append({
+                'id': _variant_id(parent_id, key),
+                'embed_text': d.behavior_embed_text(rep),
+                'embedding_title': rep.get('page_title', ''),
+                'page_content': rep['raw'],
+                'metadata': metadata,
+                'identifier_pairs': _union_identifier_pairs(variant_items),
             })
     return chunks
 
@@ -142,11 +212,14 @@ def main():
     chunks = build(annotated)
     n_parents = len(chunks)
     chunks += build_segments(annotated)
+    n_segments = len(chunks) - n_parents
+    chunks += build_variants(annotated)
 
     with open(args.output, 'w') as f:
         json.dump(chunks, f, indent=2)
-    print(f"Built {n_parents} distinct-behavior docs + "
-          f"{len(chunks) - n_parents} semantic segments. Saved to {args.output}")
+    print(f"Built {n_parents} canonical behavior docs + {n_segments} semantic "
+          f"segments + {len(chunks) - n_parents - n_segments} raw variants. "
+          f"Saved to {args.output}")
 
 
 if __name__ == '__main__':

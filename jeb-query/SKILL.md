@@ -62,7 +62,8 @@ You get back: every matching route with its parameters, auth posture, cookies
 sent and set, missing security headers and CORS; the origin's **auth model**;
 sub-paths and sibling routes; **entity links** to routes sharing the same data
 shape; the behavior documents it was seen in; and the **raw request/response**
-of one representative exchange.
+of one representative exchange. Materially different request/response variants
+are listed separately with directly retrievable ids.
 
 Flags: `--host`, `--method`, `--depth quick|normal|deep`, `--no-raw`.
 
