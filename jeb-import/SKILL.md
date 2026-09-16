@@ -1,83 +1,93 @@
 ---
 name: jeb-import
-description: Import step for J.E.B. — parse, distill, and embed a Burp Suite XML export into a per-project ChromaDB with three collections (structure, behavior, attacks), including cross-endpoint entity correlation and an identifier index. USE WHEN the user asks to process, ingest, import, vectorize, or embed a new Burp Suite XML export (or new traffic data) into the database. For searching/querying an already-populated database, use the jeb-query skill instead.
+description: Stream Burp Suite XML captures into a cumulative project-local Chroma database; rebuild or inspect import status. Use when asked to ingest, import, process, or embed traffic; use jeb-query for investigation.
 ---
 
-# J.E.B. — Import / Ingestion Pipeline (v4)
+# J.E.B. — Streaming Chroma Import
 
-This skill turns a Burp Suite XML export into a queryable, per-project ChromaDB.
-Once import is complete, use the **`jeb-query`** skill to search the database.
+Run in the engagement project, separate from the skill repository:
 
-When the user asks you to process, ingest, or vectorize a new export:
+```bash
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project
+```
 
-1. Locate the input XML file provided by the user.
-2. Run the all-in-one pipeline wrapper. It can be called from anywhere; all
-   intermediate data and the ChromaDB are written to the **project directory**
-   (the current working directory by default, or an explicit second argument):
-   ```bash
-    ~/.config/opencode/skill/jeb-import/scripts/process_burp.sh [--auth-cookies NAME[,NAME...]] [--no-auto-detect-auth-cookies] <path_to_burp_xml> [project_dir]
-   ```
-   This produces `parsed_<name>.json`, `annotated_<name>.json`,
-   `structure_<name>.json`, `behavior_<name>.json`, and `chroma_db/` inside the
-   project directory — never inside the skill folder.
-   - **First use only:** if it errors that the venv is missing, run the two
-     setup commands the error prints (creates a venv shared with `jeb-query`
-     and installs `requirements.txt`), then re-run the command above.
-   - Prerequisite: [Ollama](https://ollama.com/) 0.11.10 or newer must be
-     running locally with the `embeddinggemma:latest` model pulled. J.E.B. uses
-     EmbeddingGemma's full 768-dimensional output and its 2,048-token context.
-     Embedding calls intentionally allow up to 60 minutes for slow local hosts.
+Legacy `capture.xml [project_dir]` invocation also works. Normal import persists
+only Chroma data and the writer lock: no intermediate JSON files or debug dumps
+in the cwd or temporary directories.
 
-## Pipeline stages
+Prerequisites: Python 3.10+, Ollama 0.11.10+ with `embeddinggemma:latest` pulled,
+and the shared environment:
 
-`process_burp.sh` runs, in sequence: `parse.py` → `normalize.py` →
-`build_structure.py` → `vector_store.py --collection structure` →
-`build_behavior.py` → `vector_store.py --collection behavior`. You never invoke
-these individually — just run `process_burp.sh` as shown above. A few of their
-internal behaviors explain fields you'll see later when querying with
-`jeb-query`:
+```bash
+python3 -m venv ~/.config/opencode/skill/jeb-import/scripts/venv
+~/.config/opencode/skill/jeb-import/scripts/venv/bin/pip install -r ~/.config/opencode/skill/jeb-import/scripts/requirements.txt
+```
 
-- **Raw headers are kept, not embedded.** `parse.py` retains broad raw headers
-  (only browser-hint noise like `sec-ch-ua*`/`sec-fetch-*` is stripped) for
-  `jeb-query`'s `--contains` substring search, even though headers never
-  go into the embedding text.
-- **Full analysis, bounded evidence.** Textual request and response bodies are
-  decoded before classification and schema/identifier extraction. Stored raw
-  evidence is bounded to 64 KiB per body, with structured previews or head/tail
-  text retained for larger bodies; gzip, deflate, and Brotli are supported.
-- **Dynamic variants survive collapse.** Canonical behavior documents still
-  summarize repeated traffic, but materially different request/response shapes
-  are retained as raw variant children and surfaced by endpoint/search results.
-- **Content-aware access classification.** `normalize.py` labels each response
-  `data` / `auth_wall` / `shell` / `denied` so a "200 OK that returns the login
-  page" (a soft auth wall) is never mistaken for real anonymous access. This is
-  what powers `jeb-query`'s `anon_allowed` / `access_control` fields.
-- **Identifier extraction.** `normalize.py` pulls id/uuid/hash-shaped values from
-  URL path segments and identifier-named JSON fields (`id`, `*_id`, `uuid`,
-  `guid`) into an exact-match index — this is what `jeb-query`'s `identifier`
-  looks up.
-- **Auto-detected login cookies.** `normalize.py` watches for a POST to a
-  login-like path whose response is not a 4xx/5xx and doesn't itself look
-  like another login/auth-wall page, and registers any cookie it sets as an
-  authentication cookie for the rest of the run — no `--auth-cookies` flag
-  needed in the common case. Pass `--no-auto-detect-auth-cookies` to disable
-  this and rely solely on manually-specified `--auth-cookies` names.
+## Operations
 
-Every embedded document is also indexed in project-local SQLite FTS5 for hybrid
-semantic + exact-term retrieval. Collections use explicit cosine distance.
+```bash
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh rebuild /path/to/project
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh status /path/to/project
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh abandon <capture_id> /path/to/project
+```
 
-The `attacks` collection starts empty and is written during hunting by
-`jeb-query`'s `record-attack`.
+Rebuild needs no XML: it reads retained observations. Failed/interrupted captures
+are excluded until resumed from their source. Abandon explicitly excludes failed
+captures without deleting their evidence; rebuild afterward. Capture parse state
+and project index state are separate. A single OS-released lock protects writes.
 
-> See the **`jeb-query`** skill for the full collection schema, field
-> reference, and all query commands.
+## Inherited project settings
 
-## Notes
+Omitted flags inherit saved settings. Explicit flags apply to the entire corpus:
 
-- The normal usage is one capture and one disposable `chroma_db` per project.
-  After this skill's schema or embedding profile changes, delete `chroma_db/`
-  and re-import the original Burp export; old databases are not migrated.
-- Re-running an unchanged capture against the same current-profile database
-  skips unchanged documents.
-- If a collection ends up empty, confirm Ollama is running and
-  `embeddinggemma:latest` is pulled (`ollama pull embeddinggemma:latest`).
+- `--auth-cookies NAME[,NAME...]` (repeatable): replace custom cookie names;
+  `--auth-cookies ''` clears them.
+- `--auto-detect-auth-cookies` / `--no-auto-detect-auth-cookies`: set origin-scoped
+  login-cookie inference (new projects default to enabled).
+- `--rebuild` on import: force derived rebuilding even if versions match.
+
+Original capture import configuration is retained. Parser, feature, identifier,
+document-schema, and embedding versions control repeated work. The resolved local
+model digest is recorded, so changing the model behind `latest` requires rebuild.
+
+## Streaming and evidence
+
+XML is parsed, decoded, fingerprinted, and feature-extracted in small batches.
+Full decoded HTTP and original base64 remain in `exchanges`; `captures` stores
+source identity and state. Exact `identifiers` are updated for new or changed
+extraction versions. All are Chroma collections; no auxiliary SQL/FTS index.
+
+Global analysis retains compact feature records, fetching source bodies one at a
+time for distillation. Memory scales with compact features and the largest single
+exchange, not the whole raw corpus. Structure and behavior are emitted sequentially
+in bounded embedding batches. Metadata-only changes retain existing vectors.
+
+Repeated observations inside one capture survive. Equal full evidence plus
+timestamp and occurrence ordinal identifies cross-capture overlap for aggregation.
+Coarse timestamps can be ambiguous; original capture membership always survives.
+Source records hold reverse behavior associations for paginated evidence lookup.
+
+## Recovery and findings
+
+Run status after an error. Resume parsing from the source or rebuild indexes from
+ready captures. `attacks` retains structured testing events. Rebuild repairs pending
+identifier writes and migrates finding embeddings through `attacks_rebuild_backup`.
+Finding writes are blocked while migration is pending. Legacy free-form findings
+remain readable; `legacy-unstructured` marks limits on automatic identifier repair.
+
+Preserve the database and original exports. Import older sources to populate
+observations; collapsed summaries cannot reconstruct missing history. Never delete
+the database as a profile-migration step. Legacy JSON/SQLite files remain untouched.
+
+## Explicit export
+
+Only deliberate export writes diagnostics, at a required unused destination:
+
+```bash
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh export /path/to/project \
+  --collection behavior --output /path/to/behavior.ndjson
+```
+
+Export streams newline-delimited records. Standalone parser/builders require
+`--output` and are export utilities, not normal import stages. Reinstall the updated
+definitions if an older installed wrapper still writes intermediate JSON files.

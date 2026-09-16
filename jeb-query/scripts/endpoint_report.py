@@ -18,6 +18,7 @@ import re
 from urllib.parse import urlparse
 
 import distill as d
+from storage import origin
 
 SYNTHETIC_TEMPLATES = {'{auth-model}', '{entity}', '{spa-shell}'}
 PLACEHOLDER_RE = re.compile(r'^\{[^}]*\}$')
@@ -49,15 +50,19 @@ def normalize_target(raw):
     """
     raw = (raw or '').strip()
     host = None
+    scheme, port = None, None
     path = raw
     if '://' in raw:
         parsed = urlparse(raw)
         host = parsed.hostname
+        scheme = parsed.scheme.lower()
+        port = parsed.port or (443 if scheme == 'https' else 80)
         path = parsed.path or '/'
     elif raw and not raw.startswith('/') and '/' in raw and '.' in raw.split('/')[0]:
         # bare 'app.example.com/api/orders'
         head, _, rest = raw.partition('/')
-        host, path = head, '/' + rest
+        parsed = urlparse('//' + head)
+        host, port, path = parsed.hostname, parsed.port, '/' + rest
     if '?' in path:
         path = path.split('?', 1)[0]
     if not path.startswith('/'):
@@ -65,8 +70,14 @@ def normalize_target(raw):
     if len(path) > 1:
         path = path.rstrip('/')
     template = d.templatize_path(path)
-    return {'input': raw, 'host': host, 'path': path, 'template': template,
+    return {'input': raw, 'host': host, 'scheme': scheme, 'port': port,
+            'path': path, 'template': template,
             'segments': _segments(template), 'words': d.path_words(template)}
+
+
+def origin_matches(target, meta):
+    return all(target.get(key) is None or target[key] == meta.get(key)
+               for key in ('scheme', 'host', 'port'))
 
 
 def segment_match(a_template, b_template):
@@ -149,11 +160,12 @@ def _split_sections(document):
 def _trim_half(section, body_cap, drop_body=False):
     """Keep the start line and every header; budget only the body."""
     if not section:
-        return '', 0
+        return '', 0, 0
     parts = section.split('\n\n', 1)
     head, body = parts[0], (parts[1] if len(parts) > 1 else '')
     lines = head.split('\n')
-    if len(lines) > MAX_HEADER_LINES:
+    header_dropped = max(0, len(lines) - MAX_HEADER_LINES)
+    if header_dropped:
         head = '\n'.join(lines[:MAX_HEADER_LINES]) + \
             f"\n[... {len(lines) - MAX_HEADER_LINES} more header lines]"
     dropped = 0
@@ -163,7 +175,7 @@ def _trim_half(section, body_cap, drop_body=False):
     elif len(body) > body_cap:
         dropped = len(body) - body_cap
         body = body[:body_cap]
-    return (head + ('\n\n' + body if body else '')), dropped
+    return (head + ('\n\n' + body if body else '')), dropped, header_dropped
 
 
 def truncate_raw(document, budget, meta):
@@ -176,22 +188,24 @@ def truncate_raw(document, budget, meta):
     resp_ct = str(meta.get('resp_content_type', '') or '')
     drop_body = bool(meta.get('is_static')) or \
         resp_ct.startswith(('image/', 'font/', 'video/', 'audio/'))
-    req_text, req_dropped = _trim_half(request, REQUEST_BODY_CAP)
-    resp_text, resp_dropped = _trim_half(response, max(0, int(budget)), drop_body)
+    req_text, req_dropped, req_headers = _trim_half(request, REQUEST_BODY_CAP)
+    resp_text, resp_dropped, resp_headers = _trim_half(response, max(0, int(budget)), drop_body)
     text = f"--- REQUEST ---\n{req_text}\n\n--- RESPONSE ---\n{resp_text}"
     dropped = req_dropped + resp_dropped
     if dropped:
         text += (f"\n\n... [truncated {dropped} of {total} chars "
                  f"-- full document: jeb-query.sh get {meta.get('_id', '<id>')}]")
-    return {'text': text, 'truncated': bool(dropped),
-            'bytes_shown': len(text), 'bytes_total': total}
+    return {'text': text, 'truncated': bool(dropped or req_headers or resp_headers),
+            'body_chars_omitted': dropped, 'header_lines_omitted': req_headers + resp_headers,
+            'chars_shown': len(text), 'chars_total': total,
+            'stored_preview_truncated': bool(meta.get('resp_body_truncated') or meta.get('req_body_truncated'))}
 
 
 def _node_view(doc_id, meta, tier):
     return {
         'id': doc_id,
         'match': tier,
-        'origin': f"{meta.get('scheme', '')}://{meta.get('host', '')}:{meta.get('port', '')}",
+        'origin': origin(meta),
         'method': meta.get('method', ''),
         'endpoint_template': meta.get('endpoint_template', ''),
         'node_kind': meta.get('node_kind', ''),
@@ -226,10 +240,14 @@ def _brief(doc_id, meta):
 
 
 def build_report(agent, raw_target, host=None, method=None, depth='normal',
-                 raw_chars=None):
+                  raw_chars=None, limit=None):
     target = normalize_target(raw_target)
     host = host or target['host']
-    budget = BUDGET.get(depth, BUDGET['normal'])
+    if host:
+        host = target['host'] = host.lower()
+    budget = dict(BUDGET.get(depth, BUDGET['normal']))
+    if limit is not None:
+        budget['matches'] = max(1, min(limit, 100))
     raw_budget = max(0, int(raw_chars or 0))
 
     tiers = {'exact': [], 'template': [], 'descendant': [], 'sibling': [], 'fuzzy': []}
@@ -237,6 +255,8 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
         if meta.get('node_kind') in ('auth_model', 'entity'):
             continue
         if host and meta.get('host') != host:
+            continue
+        if not origin_matches(target, meta):
             continue
         if method and str(meta.get('method', '')).upper() != method.upper():
             continue
@@ -276,6 +296,9 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
         'query': {'input': target['input'], 'path': target['path'],
                   'template': target['template'], 'host': host},
         'count': len(matches),
+        'total': len(matched),
+        'has_more': len(matched) > len(matches),
+        'complete': True,
         'matches': matches,
     }
 
@@ -332,6 +355,10 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
 def _example_view(doc_id, meta):
     return {
         'id': doc_id,
+        'exchange_id': meta.get('exchange_id', ''),
+        'capture_id': meta.get('capture_id', ''),
+        'credential_present': meta.get('credential_present'),
+        'auth_state': meta.get('auth_state', 'unknown'),
         'method': meta.get('method', ''),
         'status_code': meta.get('status_code'),
         'auth_role': meta.get('auth_role', ''),
@@ -368,25 +395,29 @@ def _raw_example(agent, metas, budget):
     reasons = []
     if meta.get('access_class') == 'data':
         reasons.append('served application data')
-    if meta.get('authenticated'):
-        reasons.append('authenticated')
+    if meta.get('credential_present'):
+        reasons.append('credential observed (acceptance unknown)')
     reasons.append(f"status {meta.get('status_code')}")
     reasons.append(f"{meta.get('instance_count', 1)} instance(s)")
-    out.update({'id': chosen, 'selected_because': ', '.join(reasons),
+    out.update({'id': chosen, 'exchange_id': meta.get('exchange_id', ''),
+                'selected_because': ', '.join(reasons),
                 'instance_count': meta.get('instance_count', 1)})
     return out
 
 
 def _auth_model(agent, matches, want_report):
-    hosts = [m['origin'].split('://', 1)[-1].rsplit(':', 1)[0] for m in matches]
-    for host in dict.fromkeys(h for h in hosts if h):
+    models = []
+    for origin in dict.fromkeys(m['origin'] for m in matches):
+        parsed = urlparse(origin)
+        host = parsed.hostname
         found = agent.filter(where={"$and": [{'node_kind': 'auth_model'},
-                                             {'host': host}]},
+                                             {'host': host}, {'scheme': parsed.scheme},
+                                             {'port': parsed.port}]},
                              n_results=1, snippet_len=0)
         if not found['results']:
             continue
         node = found['results'][0]
-        view = {'id': node['id'], 'host': host,
+        view = {'id': node['id'], 'host': host, 'origin': origin,
                 'mechanisms': _csv_list(node.get('auth_mechanisms')),
                 'cookies_set': _csv_list(node.get('cookies_set')),
                 'cookies_sent': _csv_list(node.get('cookies_sent')),
@@ -395,8 +426,8 @@ def _auth_model(agent, matches, want_report):
         if want_report:
             docs = agent.get_many([node['id']], include=('documents',))
             view['report'] = docs.get(node['id'], {}).get('document', '')
-        return view
-    return None
+        models.append(view)
+    return models or None
 
 
 def _entities(agent, matches):
@@ -411,8 +442,10 @@ def _entities(agent, matches):
         meta = entry['metadata']
         out.append({'entity_id': doc_id,
                     'identifier_field': meta.get('identifier_field', ''),
-                    'produced_by': _csv_list(meta.get('produced_by')),
-                    'consumed_by': _csv_list(meta.get('consumed_by'))})
+                    'produced_by': _csv_list(meta.get('produced_by'))[:25],
+                    'consumed_by': _csv_list(meta.get('consumed_by'))[:25],
+                    'links_truncated': any(len(_csv_list(meta.get(f))) > 25
+                                           for f in ('produced_by', 'consumed_by'))})
     return out
 
 
@@ -420,30 +453,25 @@ def _next_steps(report, target):
     steps = []
     raw = report.get('raw_example')
     if raw:
-        steps.append(f"jeb-query.sh get {raw['id']}  -- full request/response")
+        steps.append(f"jeb-query.sh get {raw.get('exchange_id') or raw['id']}  -- evidence")
     elif report.get('examples'):
         steps.append(f"jeb-query.sh get {report['examples'][0]['id']}")
     if report.get('related_by_entity'):
-        steps.append("jeb-query.sh identifier <id value>  -- prove two routes touched "
-                     "the same record")
+        steps.append("jeb-query.sh identifier <id value>  -- inspect identifier evidence")
     steps.append(f"jeb-query.sh search --in behavior --path {target['path']}")
     steps.append(f"jeb-query.sh attacks --path {target['path']}  -- findings recorded here")
     return steps
 
 
 def _empty_report(agent, target, host, notes):
-    """Never answer an unmatched endpoint with nothing: fall back to a conjunctive
-    lexical lookup on the path tokens, then to the nearest routes by name."""
+    """Suggest observed routes sharing path words within the requested origin."""
     suggestions = []
-    parent_ids = agent._lexical_candidates(target['words'], 'structure', 20, op='AND')
-    for doc_id, entry in agent.get_many(parent_ids[:10]).items():
-        meta = entry['metadata']
-        if meta.get('endpoint_template') not in SYNTHETIC_TEMPLATES:
-            suggestions.append(_brief(doc_id, meta))
     if not suggestions:
         wanted = set(target['words'].split())
         scored = []
         for doc_id, meta in agent.parent_index():
+            if not origin_matches(target, meta):
+                continue
             template = str(meta.get('endpoint_template', '') or '')
             if template in SYNTHETIC_TEMPLATES:
                 continue

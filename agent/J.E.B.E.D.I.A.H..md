@@ -23,8 +23,10 @@ capture does not contain, say so and ask the user to capture it.
 
 ## Tools
 
-- **`jeb-import`** — run once per project, to turn a Burp XML export into
-  `chroma_db/`. If a query reports a missing collection, this has not been run.
+- **`jeb-import`** — accumulate Burp XML captures into the engagement project's
+  `chroma_db/`, retaining observations and source provenance. Preserve the database
+  and original exports across rebuilds. The skill repository is source code, not
+  the engagement data directory.
 - **`jeb-query`** — everything else. Read its SKILL.md before your first query.
 
 Always work against the current project's database: run from the project
@@ -59,7 +61,7 @@ signal**, then reason about it:
 
 | To investigate | Query the structural signal |
 |---|---|
-| IDOR / BOLA | routes with `{id}`/`{uuid}` templates; `endpoint`'s `related_by_entity` linking a reader and a writer; then `identifier <value>` to prove both touched the same record |
+| IDOR / BOLA | routes with `{id}`/`{uuid}` templates; entity links between readers and writers; then `identifier <value>` and source exchanges to inspect resource identity and account context |
 | Broken access control | `search --in structure --anon`; `--access-control open-data`; on behavior, `--anon-matches-auth` |
 | Auth walls that only look protected | `search --in structure --access-control soft-auth-wall` |
 | SQLi / injection | `search --status '>=500' --param <name>`; `search --contains "SQLSyntax"` (also `SQLException`, `ORA-`, `syntax error`) |
@@ -84,7 +86,8 @@ it, and a medium-effort pass should exhaust a tier before dropping to the next:
 
 1. **Auth boundary anomalies** — `--access-control soft-auth-wall`,
    `--anon-matches-auth`, `--anon` on `structure`. These mean the access
-   control model itself is broken, not just one endpoint.
+   observations warrant investigation; they do not by themselves establish an
+   authorization failure or a broken access-control model.
 2. **IDOR / BOLA shape** — routes with `{id}`/`{uuid}` templates, especially
    ones with `related_by_entity` pairing a reader and a writer.
 3. **State-changing methods with weak CSRF posture** — `POST`/`PUT`/`DELETE`
@@ -104,7 +107,7 @@ it, and a medium-effort pass should exhaust a tier before dropping to the next:
 3. **Deep dive** — `get <id>` for the full raw exchange when the truncated one
    in the report is not enough.
 4. **Correlate** — `related_by_entity` for routes sharing a shape; `identifier
-   <value>` for routes touching the same record; `similar <id>` for more of the
+   <value>` for evidence referencing equal values; `similar <id>` for more of the
    same kind.
 5. **Corroborate before you escalate** — don't call something a finding off a
    single query. Confirm a hypothesis with at least one follow-up (`get`,
@@ -129,3 +132,32 @@ Cite the document id behind every claim, so the user can `get` it. Separate what
 you **observed** in the capture from what you **infer** from it, and say which
 findings would need active testing to confirm. Give severity in terms of what an
 attacker gets, not a generic label.
+
+## Evidence and query contracts
+
+Import streams directly into Chroma with no intermediate JSON files. Use
+`process_burp.sh rebuild <project_dir>` without source XML to repair indexes,
+and `status` to distinguish failed captures from pending analysis. Omitted import
+options inherit project settings; original capture import configuration survives.
+Use `evidence <behavior_id> --signal content|schema` to inspect supporting
+observations. Original HTTP base64 is opt-in with `get <exchange_id> --original`.
+Use `search --in exchanges --contains <text>` for full decoded source text beyond
+representative previews. Retry a finding with the same `--event-id` and identical
+inputs to avoid duplicates. A returned saved ID with pending identifier indexing
+is a successful evidence write; rebuild repairs the remaining index work.
+
+Search is semantic-only: Ollama embeddings and Chroma cosine distance. There is
+no FTS/BM25/RRF sidecar. Use exact metadata filters or `identifier` for values and
+`--contains` for literal preview substrings. Lower distance is closer, not a
+confidence or vulnerability probability. Review candidate-limit diagnostics.
+
+Credential presence is not authentication success. A CORS origin match is not
+proof of reflection. Public anonymous data is not automatically an authorization
+bug. Schema matches are weaker than full content matches; neither proves the same
+underlying object without evidence. Cite `exchange_id` for source observations,
+including capture identity, original HTTP, and content beyond bounded previews.
+
+Check `incomplete_captures`, errors, and pagination before interpreting empty or
+partial results. Runtime errors use nonzero exit codes and JSON error objects.
+Use full endpoint URLs to preserve scheme and port. Never delete the database to
+repair a schema mismatch; rebuild through the import skill while retaining findings.

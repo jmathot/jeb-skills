@@ -24,11 +24,12 @@ from collections import defaultdict
 from urllib.parse import urlparse
 
 import distill as d
+from storage import origin as format_origin
 
 SPA_ROUTE_THRESHOLD = 4       # identical HTML body across >= N routes => shell
 BOILERPLATE_MIN_PAGES = 5     # need this many host pages to infer a template
 BOILERPLATE_FRACTION = 0.5    # block on > this fraction of pages => boilerplate
-CORS_RANK = {'*': 4, 'reflected': 3, 'null': 2, 'specific': 1, '': 0}
+CORS_RANK = {'*': 4, 'matches-origin': 3, 'null': 2, 'specific': 1, '': 0}
 
 
 def _reconstruct_headers(headers: dict) -> str:
@@ -39,21 +40,23 @@ def _reconstruct_headers(headers: dict) -> str:
     return "\n".join(lines)
 
 
-def reconstruct_raw(item) -> str:
+def reconstruct_raw(item, full=False) -> str:
     req = item.get('request', {})
     resp = item.get('response', {})
     parts = ["--- REQUEST ---", req.get('line', '')]
     if req.get('headers'):
         parts.append(_reconstruct_headers(req['headers']))
     parts.append("")
-    parts.append(req.get('body', '') or '')
+    parts.append((req.get('analysis_body') if full and req.get('body_kind') == 'text'
+                  else req.get('body', '')) or '')
     parts.append("")
     parts.append("--- RESPONSE ---")
     parts.append(resp.get('line', ''))
     if resp.get('headers'):
         parts.append(_reconstruct_headers(resp['headers']))
     parts.append("")
-    parts.append(resp.get('body', '') or '')
+    parts.append((resp.get('analysis_body') if full and resp.get('body_kind') == 'text'
+                  else resp.get('body', '')) or '')
     return "\n".join(parts)
 
 
@@ -83,8 +86,9 @@ def pass_a(items, auth_cookie_names=None):
         resp_ct = d.resp_media_type(resp_headers)
         param_names = d.extract_param_names(method, url, req_ct, req_body)
         graphql_operation = d.graphql_operation(req_body, url)
-        reqf = d.request_features(method, url, req_headers, param_names,
-                                   auth_cookie_names)
+        cookies = (auth_cookie_names.get((scheme, host, port), set())
+                   if isinstance(auth_cookie_names, dict) else auth_cookie_names)
+        reqf = d.request_features(method, url, req_headers, param_names, cookies)
         req_origin = d.header_get(req_headers, 'origin')
 
         req_schema_sig, req_schema_keys = '', []
@@ -104,6 +108,8 @@ def pass_a(items, auth_cookie_names=None):
 
         is_html = resp_class in ('html_document', 'spa_shell')
         a = {
+            'exchange_id': item.get('_exchange_id', ''),
+            'capture_id': item.get('_capture_id', ''),
             'url': url, 'method': method, 'status_code': status_code,
             'time': item.get('time', ''),
             'host': host, 'scheme': scheme, 'port': port,
@@ -249,7 +255,7 @@ def build_auth_models(annotated):
 
         app_missing = sorted(h for h, c in miss_count.items()
                              if total_dynamic and c / total_dynamic > 0.5)
-        origin = f"{scheme}://{host}:{port}"
+        origin = format_origin({'scheme': scheme, 'host': host, 'port': port})
         models[origin] = {
             'scheme': scheme,
             'host': host,
@@ -295,7 +301,9 @@ def _access_class(a, login_fps):
         return 'empty'
     if rc == 'static_asset':
         return 'static'
-    if rc in ('binary', 'undecodable'):
+    if rc == 'undecodable':
+        return 'unknown'
+    if rc == 'binary':
         if a.get('is_static'):
             return 'static'
         return 'data' if 200 <= sc < 300 else 'other'
@@ -334,26 +342,51 @@ def pass_access(annotated):
         a['soft_denied'] = ((not authed) and a['status_code'] < 400
                             and a['access_class'] in ('auth_wall', 'shell'))
 
-    # Step 3: differential — anon data that matches an authenticated data
-    # response is high-confidence real access.
+    # Step 3: distinguish shape similarity from exact same-resource content.
+    # The comparison request merely carried a credential; acceptance is unknown.
     groups = defaultdict(list)
     for a in annotated:
         groups[(a['scheme'], a['host'], a['port'], a['method'],
                 a['endpoint_template'])].append(a)
     for items in groups.values():
-        authed_fps = {a['_content_fp'] for a in items
-                      if a['req_features']['authenticated'] and a['access_class'] == 'data'
-                      and a['_content_fp']}
+        credentialed_schemas = {a['response_variant_sig'] for a in items
+                                if a['req_features']['credential_present']
+                                and a['access_class'] == 'data'}
+        authed_fps = {(a['url'], a.get('req_body_sha256'), a.get('resp_body_sha256')) for a in items
+                       if a['req_features']['authenticated'] and a['access_class'] == 'data'
+                       and a.get('resp_body_sha256')}
         for a in items:
+            a['anon_schema_matches_credentialed'] = bool(
+                not a['req_features']['credential_present'] and a['access_class'] == 'data'
+                and a['response_variant_sig'] in credentialed_schemas)
             a['anon_matches_auth'] = bool(
                 (not a['req_features']['authenticated']) and a['access_class'] == 'data'
-                and a['_content_fp'] and a['_content_fp'] in authed_fps)
+                and a.get('resp_body_sha256') and
+                (a['url'], a.get('req_body_sha256'), a.get('resp_body_sha256')) in authed_fps)
+
+
+def annotate(items, auth_cookies=(), auto_detect=True):
+    """Shared normalization entry point for cumulative and standalone imports."""
+    custom = d.normalize_auth_cookie_names(auth_cookies)
+    by_origin = defaultdict(list)
+    for item in items:
+        p = urlparse(item['url'])
+        by_origin[(p.scheme, (p.hostname or '').lower(),
+                   p.port or (443 if p.scheme == 'https' else 80))].append(item)
+    cookies = {origin: custom | (d.detect_login_cookie_names(group) if auto_detect else set())
+               for origin, group in by_origin.items()}
+    annotated = pass_a(items, cookies)
+    pass_b_spa(annotated)
+    boilerplate = pass_c_boilerplate(annotated)
+    pass_access(annotated)
+    pass_d_distill(annotated, boilerplate)
+    return annotated, build_auth_models(annotated)
 
 
 def main():
     ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 2: normalise + annotate")
     ap.add_argument('input_file', nargs='?', default='parsed_traffic.json')
-    ap.add_argument('-o', '--output', default=None)
+    ap.add_argument('-o', '--output', required=True, help='explicit export destination')
     ap.add_argument('--auth-cookies', action='append', default=[],
                     help='additional authentication/session cookie names; '
                          'repeat or comma-separate')
@@ -366,24 +399,9 @@ def main():
     with open(args.input_file) as f:
         items = json.load(f)
 
-    auth_cookie_names = d.normalize_auth_cookie_names(args.auth_cookies)
-    if args.auto_detect_auth_cookies:
-        detected_cookie_names = d.detect_login_cookie_names(items)
-        if detected_cookie_names:
-            print(f"Auto-detected {len(detected_cookie_names)} login session "
-                  f"cookie name(s): {', '.join(sorted(detected_cookie_names))}")
-        auth_cookie_names |= detected_cookie_names
-    annotated = pass_a(items, auth_cookie_names)
-    pass_b_spa(annotated)
-    boilerplate = pass_c_boilerplate(annotated)
-    pass_access(annotated)
-    pass_d_distill(annotated, boilerplate)
-    auth_models = build_auth_models(annotated)
+    annotated, auth_models = annotate(items, args.auth_cookies, args.auto_detect_auth_cookies)
 
     out = args.output
-    if out is None:
-        base, ext = os.path.splitext(args.input_file)
-        out = f"{base}_annotated{ext or '.json'}"
     with open(out, 'w') as f:
         json.dump({'items': annotated, 'auth_models': auth_models}, f, indent=2, default=list)
 

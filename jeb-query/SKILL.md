@@ -1,174 +1,135 @@
 ---
 name: jeb-query
-description: Query step for J.E.B. — investigate a specific endpoint or URL from an imported Burp Suite capture, map the site, search request/response behavior, correlate endpoints by data shape or identifier value, and record or recall findings by vulnerability class. USE WHEN asked to look at an endpoint or path, map an app, find endpoints reachable anonymously, inspect cookies/headers/auth/CORS, chase an id across endpoints, or log an attack result. To first parse and embed a Burp XML export, use the jeb-import skill.
+description: Investigate endpoints, map an app, inspect HTTP/auth/CORS behavior, correlate identifier evidence, and record or recall findings from a project-local Chroma database. Use jeb-import first for new Burp XML traffic.
 ---
 
-# J.E.B. — Query / Hunting Interface (v4)
+# J.E.B. — Chroma Query Interface
 
-Queries a ChromaDB built by the **`jeb-import`** skill. If the database does not
-exist yet, run `jeb-import` first.
+Run each command with the complete installed script path:
 
-Every command starts with this prefix. Run it in full every time — a shell
-variable set in one command is **not** available in the next:
-```
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh
+```bash
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh endpoint https://app.example/api/orders/42
 ```
 
-Run from the project directory so `./chroma_db` resolves to that project's
-database, or pass `--db-path <project_dir>/chroma_db`. Projects never mix.
+Run from the engagement project, or supply `--db-path /path/to/chroma_db`.
+The source repository is not the engagement data directory.
 
-## Pick your command
+## Commands
 
-| Situation | Command |
+| Need | Command |
 |---|---|
-| The user named an endpoint, path or URL | `endpoint /api/orders` |
-| You want the site map | `map` |
-| You are describing behavior in words | `search "password reset token"` |
-| You want a filtered list, no words | `search --in structure --anon` |
-| You have a document id | `get <id>` |
-| You want more like this document | `similar <id>` |
-| You have a concrete id/uuid value | `identifier 42` |
-| You finished testing something | `record-attack --vuln-class ... --endpoint ...` |
-| You want findings you already logged | `attacks --vuln-class SQLi` |
+| Named endpoint or URL | `endpoint <path-or-url>` |
+| Site map | `map --limit 50 --offset 0` |
+| Search concepts | `search "password reset email" --method POST` |
+| Filter observed records | `search --status '>=500' --param q` |
+| Literal preview substring | `search --contains "access-control-allow-origin: *"` |
+| Exact identifier evidence | `identifier 42 --limit 50 --offset 0` |
+| Read an observation or document | `get <id>` |
+| Supporting observations | `evidence <behavior_id> --limit 50 --offset 0` |
+| Supporting content comparisons | `evidence <behavior_id> --signal content` |
+| Related semantic documents | `similar <id>` |
+| Recorded findings | `attacks --vuln-class SQLi` |
 
-Every command prints one JSON object with `count`, `results`/`matches`, `notes`
-and `next`. Read `next` — it names the follow-up commands with real ids in them.
+## Retrieval semantics
 
-## What is NOT in the index
+Semantic search uses Ollama and Chroma cosine distance only. There is no lexical
+search, BM25, RRF, `top_p`, or normalized confidence score. Results resolve
+segments/variants to their canonical parents and include the matching IDs and
+representations. Lower `distance` is closer; it does not establish relevance or
+security impact by itself.
 
-`structure` and `behavior` store **protocol structure only**: methods, path
-templates, parameter names, status codes, content types, auth roles and
-mechanisms, cookie names and flags, missing security headers, CORS posture, JWT
-alg and claims.
+Use `--depth quick|normal|deep` or `--limit N`. Defaults:
 
-They contain **no vulnerability names**. Never put words like `sqli`,
-`xss`, `ssrf`, `idor`, `csrf`, `rce` or `vulnerability` into `search` — they are
-stripped before the query runs and reported back in `rejected_terms`. To
-investigate a vulnerability, search for its *structural signal* (a parameter
-name, a 500 status, an anonymous 200) or start from `endpoint`. Vulnerability
-classes exist only in `attacks`, as the `vuln_class` field.
+| Depth | Candidates | Maximum results | Response preview characters |
+|---|---:|---:|---:|
+| quick | 20 | 5 | 0 |
+| normal | 40 | 8 | 2,000 |
+| deep | 120 | 25 | 8,000 |
 
----
+`--loose` disables the distance cutoff. Empty searches can contain `fallback`
+matches with that cutoff disabled, while retaining metadata/content constraints.
+`candidate_limit_reached` warns that semantic candidate selection may limit recall.
+Candidates expand adaptively up to 1,000 when filtering leaves too few eligible
+parents. Diagnostics report the final candidate budget and post-filter rejections.
+Metadata-only listings page the collection fully and return `total`, `complete`,
+`offset`, and `has_more`. Use `--offset` only for listings without search text.
+`complete` describes enumeration, not capture coverage or import consistency;
+always check `incomplete_captures`, `index_state`, and `notes`.
 
-## 1. `endpoint <path|url>` — start here
+Filters: `--host`, `--method` (repeatable), `--path`, `--status`, `--param`,
+`--cookie`, `--missing-header`, `--anon`, `--auth`, `--cors-open`, `--kind`,
+`--access-control`, `--access-class`, `--anon-matches-auth`, `--cookie-issues`,
+`--jwt`, `--contains`. `--in structure|behavior|attacks` selects semantic scope.
+Static assets are excluded by default; add `--include-static` when relevant.
+Collection-incompatible facets are rejected. Cookie names match exactly, including
+case, rather than by substring.
 
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh endpoint /api/orders
-```
-Accepts `/api/orders`, `/api/orders/42` or `https://app/api/orders?limit=10` —
-concrete ids are normalised to the stored template automatically.
+`--contains` is case-sensitive and searches canonical/variant previews, not every
+original exchange byte. Reconstructed header names are lowercase. Source evidence
+is accessible through `exchange_id` or identifier hits. `get <exchange_id>` includes
+decoded HTTP, capture ID, source item position, and comparison evidence references.
+Add `--original` to include original HTTP base64; it is omitted by default.
 
-You get back: every matching route with its parameters, auth posture, cookies
-sent and set, missing security headers and CORS; the origin's **auth model**;
-sub-paths and sibling routes; **entity links** to routes sharing the same data
-shape; the behavior documents it was seen in; and the **raw request/response**
-of one representative exchange. Materially different request/response variants
-are listed separately with directly retrievable ids.
-
-Flags: `--host`, `--method`, `--depth quick|normal|deep`, `--no-raw`.
-
-## 2. `map` — the site map
-
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh map
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh map --kind auth_model
-```
-`--kind` is `page`, `endpoint`, `action`, `auth_model` or `entity`.
-
-## 3. `search [text]` — hybrid search, or a pure filter
+For text outside retained representative previews:
 
 ```bash
-# words: matched against route, response and access concepts
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search "password reset token" --method POST
-
-# no words: a pure metadata filter
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search --in structure --anon
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search --status '>=500' --param q
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search --contains "Access-Control-Allow-Origin: *"
+~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search --in exchanges \
+  --host app.example --contains "SQLSyntaxError"
 ```
 
-`--in structure|behavior|attacks` (default `behavior`). Static js/css/image
-noise is excluded automatically; pass `--include-static` to keep it.
+Source scope supports host/method/path and exact metadata filters, not semantic
+query words. Full reconstructed decoded HTTP is scanned in small pages, excluding
+failed/abandoned captures. `evidence <behavior_id>` pages supporting observations;
+optional `--signal content|schema` selects positive comparisons. Source metadata
+includes up to five counterpart IDs and the total match count for each signal.
 
-Filters: `--host`, `--method`, `--path`, `--status 500|'>=500'|500-599|5xx`,
-`--anon`, `--auth`, `--param`, `--cookie`, `--missing-header csp`, `--cors-open`,
-`--contains`, `--kind`, `--access-control`, `--access-class`,
-`--anon-matches-auth`, `--cookie-issues`, `--jwt`.
+`endpoint` does not call Ollama. Full URLs constrain scheme, host, and port.
+It includes origin-specific auth models (an array), entity links, behavior examples,
+variants, and a bounded raw preview. `--no-raw` omits the preview. Raw size fields
+are character counts; body/header omissions and stored-preview truncation are
+separately labeled.
 
-Sizing: `--depth quick|normal|deep` (default `normal`), or `--limit N`. If a
-search returns nothing, read `fallback` — those are the closest matches with the
-relevance cutoff disabled — or retry with `--loose`.
+## Interpret observations carefully
 
-**Access control.** `--anon` on `structure` means an anonymous request actually
-**received application data** (real broken access control). A "200 OK that
-returns the login page" is not flagged; find those with
-`--access-control soft-auth-wall`. On `behavior`, `--anon-matches-auth` is the
-strongest signal: the anonymous response matched the authenticated one.
+- Credential presence is not successful authentication. `credential_present` and
+  `auth_state` are explicit; `authenticated`/`authenticated_ever` remain legacy
+  names for recognized credential presence.
+- `--anon` means no recognized credential. On `structure`, decoded data must also
+  have been observed. Public data alone is not a vulnerability.
+- `anon_matches_auth` compares full response-body hashes at the same URL and
+  request-body hash with credential-bearing traffic. It does not confirm that
+  those credentials were accepted. `anon_schema_matches_credentialed` is weaker.
+- Undecodable responses have an unknown access outcome.
+- CORS `matches-origin` records one equality observation, not arbitrary origin
+  reflection. `--cors-open` selects wildcard/null observations.
+- Entity links represent common shapes. Equal identifier values are leads to
+  inspect, not proof of identical records across services or accounts.
+- Identifier extraction is bounded/sampled; a missing hit is not proof of absence.
 
-## 4. `get <id>` / `similar <id>`
+Structural searches should describe protocol signals. Vulnerability jargon is
+removed with explicit `rejected_terms` and `screening_action` fields. The `attacks`
+collection is exempt: it records vulnerability classes supplied during testing.
 
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh get <id>
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh similar <id> --limit 10
-```
-`get` returns full metadata plus the raw request/response (or the node report for
-`structure`). The collection is detected from the id — you never need to say it.
+## Findings
 
-## 5. `identifier <value>` — same record, different endpoint
-
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh identifier 42
-```
-Every document, in any collection, that referenced that concrete id/uuid/hash —
-in a URL path segment or a JSON field named `id`, `*_id`, `uuid` or `guid`.
-Entity links (from `endpoint`) prove two routes share a data *shape*;
-`identifier` proves they touched the same *record*. That pairing is the evidence
-for an IDOR/BOLA chain: write through one route, read it back through the other.
-
-## 6. `record-attack` / `attacks`
-
-Log every active test, including the ones that found nothing.
 ```bash
 ~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh record-attack \
-  --vuln-class SQLi --endpoint "https://app/api/search" --method GET \
-  --param q --payload "' OR 1=1--" --status 500 --verdict vulnerable \
-  --severity high --source-id <behavior_id> --evidence "SQLSyntaxErrorException" \
+  --vuln-class SQLi --endpoint https://app.example/api/search --method GET \
+  --param q --payload "'" --status 500 --verdict inconclusive \
+  --source-id <behavior-id> --evidence "Database error in response" \
   --request-file req.txt --response-file resp.txt
 ```
-Required: `--vuln-class`, `--endpoint`. Verdicts: `vulnerable` |
-`not_vulnerable` | `inconclusive` (default).
 
-```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh attacks --vuln-class SQLi
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh attacks --verdict vulnerable
-```
+Required: `--vuln-class`, absolute `--endpoint` URL. Verdicts: `vulnerable`,
+`not_vulnerable`, `inconclusive`. Include method and raw evidence. Findings have
+unique event IDs. Optional `--event-id <caller-key>` makes retries idempotent;
+different inputs with the same key are rejected. A saved finding whose identifier
+write fails still returns its ID with `identifier_state: pending`; project rebuild
+repairs it. `attacks` sorts newest-first before pagination. Rebuilds preserve finding
+IDs and structured inputs. Legacy free-form evidence remains readable and can be
+marked `legacy-unstructured` when automatic identifier repair is unavailable.
 
----
-
-## Field reference
-
-**`structure`** — `node_kind` (`page`|`endpoint`|`action`|`auth_model`|`entity`),
-`scheme`, `host`, `port`, `endpoint_template`, `method`, `param_names` (csv),
-`produces`, `status_codes`, `path_depth`, `instance_count`,
-`authenticated_ever`, `anon_allowed`, `anon_soft_denied`, `access_control`
-(`open-data`|`soft-auth-wall`|`enforced`|`unknown`), `auth_mechanisms`,
-`cookies_sent`, `cookies_set`, `security_headers_missing`, `cors`, `is_static`,
-`example_ids`, `entity_ids`. Entity nodes add `schema_sig`, `identifier_field`,
-`produced_by`, `consumed_by`.
-
-**`behavior`** — `scheme`, `host`, `port`, `endpoint_template`, `method`,
-`status_code`, `resp_len`, `param_names`, `param_count`, `req_content_type`,
-`resp_content_type`, `is_static`, `instance_count`, `time`, `access_class`
-(`data`|`auth_wall`|`shell`|`denied`|`redirect`|`empty`|`static`|`other`),
-`anon_matches_auth`, `authenticated`, `auth_role`, `auth_mechanism`,
-`req_features` (`origin-cross-site`, `csrf-token`, `custom-auth-header`,
-`host=…`), `cookie_names`, `set_cookies`, `cookie_issues`,
-`security_headers_missing`, `cors`, `jwt`, `redirect_location`.
-
-**`attacks`** — `vuln_class`, `verdict`, `severity`, `host`,
-`endpoint_template`, `method`, `param`, `status_code`, `source_behavior_id`,
-`payload`, `tool`, `time`.
-
-> `cors` is stored as the bare posture on `structure` (`*`, `reflected`, `null`,
-> `specific`) but with a `" creds"` suffix on `behavior` when credentials are
-> allowed. Use `--cors-open`, which matches every permissive spelling in both.
+Every successful command returns one JSON object with `command`, `count`, and
+`next`. Operational errors return JSON `error` and a nonzero exit status. Missing
+evidence must not be inferred from a failed query. If a profile mismatch is
+reported, preserve the database and run `process_burp.sh rebuild [project_dir]`.

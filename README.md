@@ -1,151 +1,227 @@
 # J.E.B.E.D.I.A.H.
 
-John's Extension for Burpsuite Export Data Ingestion And Handling — a local RAG
-framework that turns a Burp Suite XML export into a per-project vector database
-for mapping a web app and hunting vulnerabilities.
+John's Extension for Burpsuite Export Data Ingestion And Handling: a local,
+Chroma-only RAG system for investigating Burp Suite XML captures.
 
-## Features
+This repository contains the OpenCode skills, agent definition, and supporting
+scripts. Engagement captures and databases belong in a separate project directory.
 
-- **Three collections, canonical + semantic docs together**
-  - `structure` — site map: one node per `(scheme, host, port, method, endpoint_template)`
-    with ids normalised (`/products/{id}`), a per-origin `auth_model` node
-    showing which cookies are set vs consumed where, and `entity` nodes
-    correlating endpoints that share a response/request-body data shape
-    (e.g. a `POST` that edits a user and the `GET` that reads it back).
-  - `behavior` — one doc per distinct request/response; near-duplicates collapse
-    to a representative with an `instance_count`.
-  - `attacks` — results of active testing, logged while hunting.
-  - `structure` and `behavior` also hold protocol-aware semantic child vectors
-    (`granularity: "segment"`, vs. `"parent"` for canonical docs) for route,
-    response, and access/session retrieval; results resolve back to the
-    canonical parent id.
-- **Cross-endpoint correlation** — an exact-match identifier index
-  (`identifier <value>`) finds every document, in any collection, that
-  referenced a given id/uuid/hash value — the instance-level counterpart to
-  `entity` nodes' structural (same-shape) correlation.
-- **Distilled embeddings** — vectors are built from a compact, value-suppressed
-  summary (method, templated path, parameter names, response schema, security
-  features). Raw HTTP is stored for deep-dive and substring search, so repeated
-  headers/cookies never pollute retrieval.
-- **Security context** — auth mechanism, cookie names + Set-Cookie flags, missing
-  security headers, CORS posture, JWT alg/claims, cross-site origin, CSRF tokens.
-- **Content-aware access control** — flags genuine anonymous data access and
-  separates it from "200 OK login page" soft auth walls.
-- **Response-aware** — handles JSON APIs, server-rendered pages (shared
-  boilerplate removed), and SPA shells.
-- **Hybrid retrieval** — semantic child search plus SQLite FTS5 lexical search,
-  reciprocal-rank fusion, endpoint diversity, score/distance thresholds,
-  `top_k`, and cumulative retrieval `top_p` selection.
-- **Filtering** — named metadata facet flags (`--anon`, `--status`, `--param`,
-  `--cors-open`, …) and `--contains` substring search over canonical raw
-  headers/cookies, applied before final result selection.
-- **Visualization** — interactive HTML map of the vector space with diagnostics.
+## Design
 
-## Requirements
+- **Semantic discovery:** Ollama EmbeddingGemma vectors, explicit cosine distance,
+  protocol-aware route/response/session segments, and canonical-parent results.
+- **Exact queries:** Chroma metadata filtering, literal document substring filters,
+  and identifier equality lookup. No application-managed SQLite sidecar, FTS5,
+  BM25, reciprocal-rank fusion, or lexical index.
+- **Cumulative imports:** captures and source observations remain in Chroma;
+  structure and behavior summaries are derived across retained captures.
+- **Evidence:** bounded reconstructed previews for browsing; full decoded text and
+  original HTTP bytes (base64) retained in source observations. Identifier hits
+  link directly to source evidence, including values absent from a preview.
+- **Findings:** durable attack events with unique IDs and newest-first listing.
+  Rebuilding derived indexes preserves finding evidence and IDs.
+- **Origin-aware navigation:** scheme, hostname, port, method, and route template
+  distinguish endpoints; entity links retain origin-qualified routes.
 
-- Python 3
-- [Ollama](https://ollama.com/) running locally with `embeddinggemma:latest` pulled
+### Chroma collections
 
-## Setup
+| Collection | Records |
+|---|---|
+| `structure` | Endpoint, auth-model, entity summaries and semantic segments |
+| `behavior` | Canonical behavior summaries, segments, and raw variants |
+| `attacks` | Recorded testing events and evidence |
+| `captures` | Source digest, configuration, processing version, import state |
+| `exchanges` | Capture-scoped observations, source item position, full evidence |
+| `identifiers` | Exact value/field/source-document associations |
 
-    python3 -m venv ~/.config/opencode/skill/jeb-import/scripts/venv
-    ~/.config/opencode/skill/jeb-import/scripts/venv/bin/pip install \
-      -r ~/.config/opencode/skill/jeb-import/scripts/requirements.txt
+The three lookup collections use fixed one-dimensional vectors and metadata
+lookups; they never call Ollama for embeddings. Chroma may itself use SQLite
+internally; this application only manages Chroma collections and APIs.
+
+## Install
+
+Requirements: Python 3.10+, Ollama 0.11.10+ with `embeddinggemma:latest` pulled.
+Dependency versions remain in `jeb-import/scripts/requirements.txt`; validate the
+chosen dependency set in your deployment environment before pinning it.
+
+```bash
+./install-skills.sh
+python3 -m venv ~/.config/opencode/skill/jeb-import/scripts/venv
+~/.config/opencode/skill/jeb-import/scripts/venv/bin/pip install \
+  -r ~/.config/opencode/skill/jeb-import/scripts/requirements.txt
+ollama pull embeddinggemma:latest
+```
+
+Installation updates source files while preserving the installed virtual
+environment. Restart OpenCode after installing updated skills or the agent.
+Select **J.E.B.E.D.I.A.H.** with Tab.
 
 ## Import
 
-    ~/.config/opencode/skill/jeb-import/scripts/process_burp.sh \
-      path/to/burp_export.xml [project_dir]
+```bash
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh capture.xml /path/to/project
+```
 
-Writes intermediate JSON and a `chroma_db/` into the project directory.
+Optional flags:
 
-The current schema uses explicit cosine distance and semantic child collections.
-Delete an older project's `chroma_db/` before its first import with this version.
-Re-imports under the current schema only re-embed documents whose content changed.
+- `--auth-cookies NAME[,NAME...]` — additional recognized credential cookies.
+- `--no-auto-detect-auth-cookies` — disable origin-scoped login-cookie learning.
+- `--rebuild` — rebuild incompatible derived collections and migrate finding
+  embeddings through a temporary Chroma evidence backup.
+- `--auto-detect-auth-cookies` — explicitly enable login-cookie learning.
+
+Omitted configuration flags inherit saved project settings. Explicit cookie flags
+replace the project's custom names (`--auth-cookies ''` clears them). Original
+capture-import configuration remains intact. Retained captures skip parsing when
+the parser version is current; current project indexes skip analysis.
+
+### Streaming operations
+
+```bash
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh rebuild /path/to/project
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh status /path/to/project
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh abandon <failed_capture_id> /path/to/project
+```
+
+Normal import persists only Chroma data and its writer lock. No intermediate JSON
+files are written in the cwd or temporary directories. XML parsing and storage
+use small in-memory batches. Global analysis retains compact features and fetches
+full HTTP one observation at a time; derived documents are emitted sequentially in
+bounded embedding batches. Memory scales with compact features and the largest
+individual exchange, not all retained raw bodies at once.
+
+`rebuild` uses retained Chroma observations without XML. Failed/interrupted captures
+are excluded until resumed; `abandon` retains their source evidence but explicitly
+excludes them. Rebuild afterward. The legacy `capture.xml [project_dir]` wrapper
+invocation continues to work.
+
+Diagnostic export requires an explicit destination that does not already exist:
+
+```bash
+~/.config/opencode/skill/jeb-import/scripts/process_burp.sh export /path/to/project \
+  --collection behavior --output /path/to/behavior.ndjson
+```
+
+The standalone parser/builders require `--output`; they are not normal import
+stages. Reinstall updated definitions if an older installed wrapper still produces
+parsed/annotated JSON files. Existing files are left untouched.
+
+Observations have stable `(capture digest, source item index)` identities. For
+aggregate counts, equal full parsed exchanges with equal timestamps are matched
+across captures by occurrence ordinal. Repeats within one capture remain distinct;
+observations without timestamps are retained independently. Coarse timestamps can
+still make overlap ambiguous; raw capture membership remains available.
+
+An OS-released lock permits one writer. Capture states are `parsing`, `ready`,
+`failed`, and `abandoned`; project index state is separate. Queries report failed
+captures and incomplete indexes because cross-collection updates are not atomic.
+
+Unchanged embedding input reuses its existing vector even if metadata or evidence
+changes. A bounded process-local cache reuses identical new inputs. The resolved
+local model digest is recorded and checked; changing a model behind `latest`
+requires rebuilding. Identifier extraction is versioned and incremental.
+
+### Existing-project transition
+
+Keep the original database and all source exports. Run the original captures
+through `process_burp.sh --rebuild` to populate observation-backed storage.
+Old derived records absent from retained observations are reconciled away;
+reimport every capture whose history you want retained. Recorded attacks are
+preserved, including their IDs. Original origins cannot be recovered reliably
+from every legacy finding and may need manual correction.
+
+An interrupted finding migration retains `attacks_rebuild_backup` inside Chroma;
+resume with `rebuild`. Do not delete it or the database during migration.
+
+`jeb_lexical.sqlite` is no longer read or written. It is deliberately left on
+disk for external migration verification. Old intermediate JSON is likewise
+left intact. The import scripts do not infer missing historical exchanges from
+collapsed representative documents.
 
 ## Query
 
-    JQ=~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh
+Run from the engagement project directory, or pass `--db-path /path/to/chroma_db`.
 
-    # Everything about one endpoint, in one call: parameters, auth posture,
-    # cookies, headers, CORS, neighbouring routes, entity links, and the raw
-    # request/response of a representative exchange.
-    "$JQ" endpoint /api/orders
-    "$JQ" endpoint https://app/api/orders/42        # ids normalise to the template
+```bash
+JQ=~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh
+"$JQ" endpoint https://app.example:8443/api/orders/42
+"$JQ" map --limit 50 --offset 0
+"$JQ" search "password reset email" --method POST
+"$JQ" search --status '>=500' --param q
+"$JQ" search --contains "access-control-allow-origin: *"
+"$JQ" identifier 42 --limit 50 --offset 0
+"$JQ" get <exchange-or-document-id>
+"$JQ" get <exchange-id> --original
+"$JQ" evidence <behavior-id> --signal content --limit 50 --offset 0
+"$JQ" search --in exchanges --host app.example --contains "SQLSyntaxError"
+"$JQ" similar <semantic-document-id>
+```
 
-    # The site map, and how sessions work
-    "$JQ" map
-    "$JQ" map --kind auth_model
+Semantic search returns cosine `distance` (lower is closer), `matched_ids`,
+representations, and matching variants. It does not return a confidence score.
+Depth controls candidate/result/evidence budgets; `--loose` disables the distance
+cutoff. Empty results may include closest eligible `fallback` candidates.
+Candidates adaptively expand up to 1,000 when filtering leaves too few eligible
+parents. Candidate limits can affect recall; exact metadata listings scan all pages and
+return `total`, `complete`, `offset`, and `has_more`.
 
-    # Hybrid search, or a pure metadata filter when you give no words
-    "$JQ" search "password reset token" --method POST
-    "$JQ" search --in structure --anon               # anonymous access to real data
-    "$JQ" search --status '>=500' --param q
-    "$JQ" search --contains "Access-Control-Allow-Origin: *"
+`--contains` searches canonical/variant previews by default. `--in exchanges`
+searches full reconstructed decoded source HTTP, excluding failed/abandoned captures.
+Use `get <exchange_id>` for full evidence; original base64 requires `--original`.
+Reconstructed header names are lowercase; substring matching is case-sensitive.
+Cookie-name filters use exact case-sensitive names. Collection-incompatible facets
+are rejected. `evidence` pages source observations and comparison references instead
+of duplicating unlimited evidence ID lists into semantic segments.
 
-    # Pivots
-    "$JQ" get <id>                                   # collection auto-detected
-    "$JQ" similar <id>
-    "$JQ" identifier 42                              # same record, any endpoint
+Vulnerability jargon in structural searches is removed with explicit
+`rejected_terms`/`screening_action` output. Search protocol signals; use `attacks`
+for recorded vulnerability classes.
 
-    # Findings
-    "$JQ" record-attack --vuln-class SQLi --endpoint https://app/api/search \
-      --method GET --param q --payload "' OR 1=1--" --status 500 \
-      --verdict vulnerable --severity high
-    "$JQ" attacks --vuln-class SQLi
+```bash
+"$JQ" record-attack --vuln-class SQLi --endpoint https://app.example/api/search \
+  --method GET --param q --payload "'" --status 500 --verdict inconclusive \
+  --evidence "Database error in response" --request-file req.txt --response-file resp.txt
+"$JQ" attacks --vuln-class SQLi
+```
 
-Every command prints one JSON object with `count`, results, `notes` and `next`;
-`next` names the follow-up commands with real ids already filled in.
+Findings retain structured inputs. Optional `--event-id <caller-key>` makes retries
+idempotent; different inputs with the same key are rejected. A saved finding whose
+identifier indexing fails still returns its ID with `identifier_state: pending`.
+Project rebuild repairs it. Legacy free-form findings remain readable and may be
+marked `legacy-unstructured` when automatic identifier repair is unavailable.
 
-Sizing is one flag: `--depth quick|normal|deep` (or `--limit N`). If a search
-returns nothing, `fallback` carries the closest matches with the relevance
-cutoff disabled.
+### Interpreting access signals
 
-`structure` and `behavior` index **protocol structure only** — methods, path
-templates, parameter names, statuses, content types, auth roles and mechanisms,
-cookies, missing security headers, CORS, JWT claims. They hold no vulnerability
-vocabulary, so terms like `sqli` or `ssrf` are stripped from a search and
-reported in `rejected_terms`. Vulnerability classes live in `attacks` as
-`vuln_class`. Hunt by structural signal instead — see the `jeb-query` skill, and
-the signal table in the J.E.B.E.D.I.A.H. agent.
+Credential presence is not successful authentication. `credential_present` and
+`auth_state` expose that distinction; legacy `authenticated` fields remain
+credential-presence aliases. `--anon` means no recognized credential (`structure`
+additionally requires observed decoded data). Public data is not automatically a
+vulnerability. `anon_matches_auth` compares full response hashes at the same URL
+and request-body hash against credential-bearing requests. The schema-match flag
+is weaker. Neither proves authorization failure.
 
-## The J.E.B.E.D.I.A.H. agent
-
-`install-skills.sh` also installs an OpenCode agent to
-`~/.config/opencode/agent/J.E.B.E.D.I.A.H..md`. Switch to it with the **Tab** key.
-
-It carries the pentesting methodology: start from `endpoint` whenever a route is
-named, map vulnerability classes onto the structural signals the index actually
-holds, correlate by entity and identifier, and record every test result — including
-the negative ones.
+CORS `matches-origin` means one observed response matched the supplied Origin,
+not that arbitrary reflection was established. Equal identifier values are
+correlation leads, not proof of shared record identity across services.
 
 ## Visualize
 
-    ~/.config/opencode/skill/jeb-import/scripts/venv/bin/pip install \
-      -r ~/.config/opencode/skill/jeb-import/scripts/requirements-viz.txt
+Install `jeb-import/scripts/requirements-viz.txt` in the shared environment, then:
 
-The visualizer has two modes, both self-contained interactive HTML.
+```bash
+~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
+  ~/.config/opencode/skill/jeb-import/scripts/visualize.py \
+  --db-path ./chroma_db --mode graph --out site_map.html
+```
 
-`--mode embedding` (default) — the vector-space scatter (UMAP/t-SNE/PCA)
-covering canonical and semantic segment documents (distinguished by the
-`granularity` metadata field within each collection), plus collection
-schema/metric reporting, representation coverage, orphan detection,
-parent-child cosine-distance analysis, and cluster diagnostics:
+Embedding mode supports `--sample N`; vectors are sampled before loading.
+Sample diagnostics can omit parent/child counterparts and are labeled accordingly.
+Lookup collections are excluded from semantic visualization.
 
-    ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-      ~/.config/opencode/skill/jeb-import/scripts/visualize.py \
-      --db-path ./chroma_db --collection all --color-by collection \
-      --out vector_space.html
+## Verification
 
-Use `--collection canonical` or `--collection segments` for focused views.
-
-`--mode graph` — the `structure` collection as a site map: pages, endpoints
-and actions laid out as a tree under each host's auth_model root, entity
-nodes wired to the endpoints that produce/consume them, colored by
-`access_control` posture. If the `attacks` collection has any recorded
-tests, endpoints get a ring colored by their worst verdict (`--no-attacks`
-to turn that off):
-
-    ~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-      ~/.config/opencode/skill/jeb-import/scripts/visualize.py \
-      --db-path ./chroma_db --mode graph --out site_map.html
+Runtime and retrieval evaluation are performed in the separate deployment
+environment. No new test suite is supplied by this refactor. The pre-existing
+`selftest.py` describes the previous interface and is retained as historical source;
+its screening, raw-count, and error-contract assumptions need adapting externally.

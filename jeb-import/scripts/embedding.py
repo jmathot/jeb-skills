@@ -26,9 +26,9 @@ from chromadb.utils import embedding_functions
 # Bump this string whenever the prompt scheme changes so stale databases embedded
 # under an older scheme can be detected (and either handled or rebuilt).
 # This profile uses EmbeddingGemma's optional title slot when a real HTML title
-# is available. Databases are disposable: rebuild after changing this profile.
+# is available. Rebuild derived indexes after changes; preserve source observations.
 EMBEDDING_SCHEME = "embeddinggemma-v5-titled-768d"
-COLLECTION_SCHEMA = "jeb-v4"
+COLLECTION_SCHEMA = "jeb-v6-streaming"
 DISTANCE_METRIC = "cosine"
 
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
@@ -52,13 +52,22 @@ class EmbeddingGemmaFunction(embedding_functions.OllamaEmbeddingFunction):
     """Chroma-compatible Ollama adapter with an explicit J.E.B. profile."""
 
     def __call__(self, input):
-        response = self._client.embed(
-            model=self.model_name,
-            input=input,
-            truncate=False,
-            dimensions=EMBEDDING_DIMENSIONS,
-            keep_alive=OLLAMA_KEEP_ALIVE,
-        )
+        actual = self.model_digest()
+        if getattr(self, 'expected_digest', actual) != actual:
+            raise ValueError('Installed embedding model differs from the collection; rebuild the project.')
+        try:
+            response = self._client.embed(
+                model=self.model_name,
+                input=input,
+                truncate=False,
+                dimensions=EMBEDDING_DIMENSIONS,
+                keep_alive=OLLAMA_KEEP_ALIVE,
+            )
+        except Exception as exc:
+            if getattr(exc, 'status_code', None) in (400, 413, 422):
+                raise ValueError(f'Embedding input/profile rejected (context limit '
+                                 f'{EMBEDDING_CONTEXT_TOKENS} tokens; no silent truncation): {exc}') from exc
+            raise
         vectors = response["embeddings"]
         if len(vectors) != len(input):
             raise ValueError(
@@ -74,6 +83,22 @@ class EmbeddingGemmaFunction(embedding_functions.OllamaEmbeddingFunction):
                 raise ValueError(f"{OLLAMA_MODEL} returned a non-finite embedding")
             out.append(array)
         return out
+
+    def model_digest(self):
+        """Resolve the local tag once per process; never download a model here."""
+        if not getattr(self, '_resolved_digest', None):
+            for model in self._client.list()['models']:
+                name = (model.get('model') or model.get('name')) if isinstance(model, dict) else model.model
+                if name == self.model_name:
+                    self._resolved_digest = model['digest']
+                    break
+            else:
+                raise ValueError(f'Local embedding model {self.model_name} is not installed.')
+        return self._resolved_digest
+
+
+def embedding_profile(ef):
+    return {**EMBEDDING_PROFILE_METADATA, 'embedding_model_digest': ef.model_digest()}
 
 
 def make_ollama_ef():

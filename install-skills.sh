@@ -33,14 +33,13 @@ for skill in "${SKILLS[@]}"; do
     
     echo "Installing $skill..."
     
-    # Remove existing skill if it exists
-    if [ -d "$target_path" ]; then
-        echo "  Removing existing installation at $target_path"
-        rm -rf "$target_path"
-    fi
-    
-    # Copy the skill directory
-    cp -r "$source_path" "$target_path"
+    # Update sources while preserving the installed environment and local files.
+    mkdir -p "$target_path/scripts"
+    cp "$source_path/SKILL.md" "$target_path/SKILL.md"
+    for file in "$source_path"/scripts/*; do
+        [ -f "$file" ] || continue
+        cp "$file" "$target_path/scripts/"
+    done
     echo "  ✓ $skill installed successfully"
 done
 

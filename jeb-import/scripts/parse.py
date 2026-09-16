@@ -70,7 +70,7 @@ def parse_http(raw: bytes, is_request: bool):
                 k, v = line.split(':', 1)
                 if should_keep_header(k.strip()):
                     # Preserve repeated headers (e.g. multiple Set-Cookie).
-                    key = k.strip()
+                    key = k.strip().lower()
                     if key in headers:
                         headers[key] = headers[key] + '\n' + v.strip()
                     else:
@@ -274,6 +274,7 @@ def process_item(item):
                 req_truncated = True
                 req_body_kind = 'undecodable' if decode_error else 'binary'
             result['request'] = {'line': parsed['line'],
+                                  'raw_base64': base64.b64encode(raw).decode('ascii'),
                                   'headers': parsed['headers'],
                                   'body': req_body_str,
                                   'analysis_body': req_analysis,
@@ -306,6 +307,7 @@ def process_item(item):
                 truncated = True
                 body_kind = 'undecodable' if decode_error else 'binary'
             result['response'] = {'line': parsed['line'],
+                                  'raw_base64': base64.b64encode(raw).decode('ascii'),
                                   'headers': parsed['headers'],
                                   'body': body_str,
                                   'analysis_body': analysis_body,
@@ -317,19 +319,33 @@ def process_item(item):
     return result
 
 
+def iter_items(xml_file):
+    """Release completed XML records instead of retaining the full export tree."""
+    context = ET.iterparse(xml_file, events=('start', 'end'))
+    _, root = next(context)
+    for event, element in context:
+        if event == 'end' and element.tag == 'item':
+            yield process_item(element)
+            element.clear()
+            root.clear()
+
+
 def main():
     ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 1: parse Burp XML")
     ap.add_argument('xml_file')
-    ap.add_argument('-o', '--output', default='parsed_traffic.json')
+    ap.add_argument('-o', '--output', required=True, help='explicit export destination')
     args = ap.parse_args()
 
-    root = ET.parse(args.xml_file).getroot()
-    items = [process_item(item) for item in root.findall('item')]
-    items = [r for r in items if r is not None]
-
+    count = 0
     with open(args.output, 'w') as f:
-        json.dump(items, f, indent=2)
-    print(f"Parsed {len(items)} items. Saved to {args.output}")
+        f.write('[')
+        for item in iter_items(args.xml_file):
+            if count:
+                f.write(',')
+            json.dump(item, f)
+            count += 1
+        f.write(']')
+    print(f"Parsed {count} items. Saved to {args.output}")
 
 
 if __name__ == '__main__':

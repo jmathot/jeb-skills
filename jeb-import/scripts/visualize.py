@@ -105,7 +105,7 @@ def _connect(db_path):
 # Embedding-space mode
 # ---------------------------------------------------------------------------
 
-def load(db_path, collections):
+def load(db_path, collections, sample=0):
     """structure/behavior hold both canonical ('parent') and semantic child
     ('segment') documents together, distinguished by the `granularity`
     metadata field (v4+) rather than by collection name. --collection
@@ -120,20 +120,45 @@ def load(db_path, collections):
         collections = [c for c in KNOWN_COLLECTIONS if c in have]
     ids, embs, metas = [], [], []
     collection_info = {}
+    population = []
+    from storage import get_all
+    record_where = ({'granularity': 'parent'} if record_filter == 'canonical'
+                    else {'granularity': 'segment'} if record_filter else None)
+    for name in collections:
+        if name not in have:
+            continue
+        col = client.get_collection(name)
+        collection_info[name] = dict(col.metadata or {})
+        population.extend((name, i) for i in get_all(
+            col, include=[], **({'where': record_where} if record_where else {}))['ids'])
+    population.sort()
+    total_count = len(population)
+    if sample and total_count > sample:
+        indices = np.random.RandomState(42).choice(total_count, sample, replace=False)
+        population = [population[int(i)] for i in sorted(indices)]
+    selected_by_collection = defaultdict(list)
+    for name, doc_id in population:
+        selected_by_collection[name].append(doc_id)
     for name in collections:
         if name not in have:
             print(f"  (skipping '{name}': not in DB)")
             continue
         col = client.get_collection(name)
         collection_info[name] = dict(col.metadata or {})
-        got = col.get(include=['embeddings', 'metadatas'])
+        selected = selected_by_collection[name]
+        got = {'ids': [], 'embeddings': [], 'metadatas': []}
+        for start in range(0, len(selected), 500):
+            page = col.get(ids=selected[start:start + 500], include=['embeddings', 'metadatas'])
+            for field in got:
+                got[field].extend(page[field])
         n = len(got['ids'])
         if not n:
             continue
         kept = 0
         for doc_id, emb, m in zip(got['ids'], got['embeddings'], got['metadatas']):
             m = dict(m or {})
-            record_type = 'segment' if m.get('granularity') == 'segment' else 'canonical'
+            record_type = m.get('granularity', 'parent')
+            record_type = 'canonical' if record_type == 'parent' else record_type
             if record_filter and record_type != record_filter:
                 continue
             m.setdefault('doc_kind', name)
@@ -147,7 +172,7 @@ def load(db_path, collections):
         print(f"  {name}: {kept} vectors" + ("" if kept == n else f" (of {n} loaded)"))
     if not ids:
         sys.exit("No vectors found. Did you run the import pipeline?")
-    return ids, np.asarray(embs, dtype=float), metas, collection_info
+    return ids, np.asarray(embs, dtype=float), metas, collection_info, total_count
 
 
 def reduce_dims(embs, method, neighbors, min_dist):
@@ -436,21 +461,13 @@ def run_embedding_mode(args):
     out = args.out or 'vector_space.html'
     color_by = args.color_by or DEFAULT_COLOR.get(args.collection, 'doc_kind')
     print(f"Loading vectors from {args.db_path} ...")
-    ids, embs, metas, collection_info = load(args.db_path, [args.collection])
+    ids, embs, metas, collection_info, total_count = load(args.db_path, [args.collection], args.sample)
     full_embs, full_metas = embs, metas
-    total_count = len(ids)
-    full_scope = 'Full-corpus ' if args.sample and total_count > args.sample else ''
+    full_scope = 'Sample-only (missing parents may be outside sample) ' if args.sample else 'Full-corpus '
     collections_html = collection_report(collection_info, full_metas, full_scope)
     segments_html, parent_distances = segment_report(
         full_embs, full_metas, collection_info, full_scope)
     parent_hist = parent_distance_histogram(parent_distances)
-
-    if args.sample and len(ids) > args.sample:
-        sel = np.random.RandomState(42).choice(len(ids), args.sample, replace=False)
-        ids = [ids[i] for i in sel]
-        metas = [metas[i] for i in sel]
-        embs = embs[sel]
-        print(f"  subsampled to {len(ids)} points")
 
     print(f"Reducing {len(ids)} vectors with {args.reduce} ...")
     coords, reducer = reduce_dims(embs, args.reduce, args.neighbors, args.min_dist)
@@ -528,23 +545,22 @@ def build_site_graph(nodes, attacks):
     route_nodes = {i: m for i, m in nodes.items() if m.get('node_kind') != 'entity'}
     entity_nodes = {i: m for i, m in nodes.items() if m.get('node_kind') == 'entity'}
 
+    from storage import origin
     by_host_template = defaultdict(Counter)
-    by_template_only = defaultdict(Counter)
     for a in attacks:
         verdict = a.get('verdict', 'inconclusive')
         template = a.get('endpoint_template', '')
-        if a.get('host'):
-            by_host_template[(a['host'], template)][verdict] += 1
-        else:
-            by_template_only[template][verdict] += 1
+        if a.get('scheme') and a.get('host') and a.get('port') and a.get('method'):
+            by_host_template[(origin(a), a['method'], template)][verdict] += 1
 
     for m in route_nodes.values():
-        key = (m.get('host', ''), m.get('endpoint_template', ''))
-        counts = by_host_template.get(key) or by_template_only.get(key[1])
+        key = (origin(m), m.get('method', ''), m.get('endpoint_template', ''))
+        counts = by_host_template.get(key)
+        m['_origin'] = origin(m)
         m['_attack_counts'] = dict(counts) if counts else {}
         m['_attack_verdict'] = _worst_verdict(counts)
 
-    hosts = sorted({m['host'] for m in route_nodes.values() if m.get('host')})
+    hosts = sorted({m['_origin'] for m in route_nodes.values() if m.get('host')})
     return hosts, route_nodes, entity_nodes
 
 
@@ -597,7 +613,7 @@ def layout_site_graph(hosts, route_nodes, entity_nodes, host_gap=3.0):
     templates_by_host = defaultdict(set)
     for m in route_nodes.values():
         if m.get('host'):
-            templates_by_host[m['host']].add(m['endpoint_template'])
+            templates_by_host[m['_origin']].add(m['endpoint_template'])
 
     pos = {}
     template_pos = {}          # (host, template) -> (x, y) of the shared path node
@@ -627,7 +643,7 @@ def layout_site_graph(hosts, route_nodes, entity_nodes, host_gap=3.0):
 
     method_fanout = Counter()
     for doc_id, m in route_nodes.items():
-        key = (m.get('host', ''), m.get('endpoint_template', ''))
+        key = (m.get('_origin', ''), m.get('endpoint_template', ''))
         base = template_pos.get(key)
         if base is None:
             continue
@@ -660,7 +676,7 @@ def build_hierarchy_edges(route_nodes, pos, template_pos, parent_template_of):
     for doc_id, m in route_nodes.items():
         if doc_id not in pos:
             continue
-        key = (m.get('host', ''), m.get('endpoint_template', ''))
+        key = (m.get('_origin', ''), m.get('endpoint_template', ''))
         parent_t = parent_template_of.get(key)
         if parent_t is None:
             continue
@@ -686,7 +702,7 @@ def build_entity_edges(route_nodes, entity_nodes, pos, entity_links):
             if m is None or doc_id not in pos:
                 continue
             rx, ry = pos[doc_id]
-            mt = f"{m.get('method', '')} {m.get('endpoint_template', '')}"
+            mt = f"{m.get('method', '')} {m.get('_origin', '')}{m.get('endpoint_template', '')}"
             if mt in produced:
                 edges['produces'].append((rx, ry, ex, ey))
             if mt in consumed:

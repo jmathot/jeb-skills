@@ -546,6 +546,8 @@ def request_features(method: str, url: str, headers: dict, param_names,
 
     return {
         'auth_mechanism': mechanism,
+        'credential_present': authenticated,
+        'auth_state': 'credential-observed' if authenticated else 'no-recognized-credential',
         'authenticated': authenticated,
         'auth_role': role,
         'cookie_names': cookie_names,
@@ -617,7 +619,7 @@ def response_features(resp_headers: dict, req_origin: str = ''):
         elif acao.strip().lower() == 'null':
             cors = 'null'
         elif req_origin and acao.strip().lower() == req_origin.strip().lower():
-            cors = 'reflected'
+            cors = 'matches-origin'
         else:
             cors = 'specific'
 
@@ -753,12 +755,16 @@ def detect_login_cookie_names(items):
             continue
 
         status = _to_int(item.get('status', ''))
-        if status // 100 in (4, 5):
+        if not 200 <= status < 400:
             continue
 
         resp = item.get('response', {}) or {}
         resp_headers = resp.get('headers', {}) or {}
-        resp_body = resp.get('body', '') or ''
+        if resp.get('decode_error'):
+            continue
+        if login_redirect(header_get(resp_headers, 'location')):
+            continue
+        resp_body = resp.get('analysis_body', resp.get('body', '')) or ''
 
         if html_login_signals(resp_body)['is_login']:
             continue
@@ -1037,7 +1043,7 @@ def html_page_summary(body: str, boilerplate=None) -> str:
         soup.find('article') or soup.body or soup
     lead = " ".join(main.get_text(" ").split()) if main else ""
     if boilerplate:
-        for b in boilerplate:
+        for b in sorted(boilerplate, key=lambda text: (-len(text), text)):
             if b in lead:
                 lead = lead.replace(b, ' ')
     lead = _truncate(lead, HTML_TEXT_LEAD_CAP)
@@ -1320,7 +1326,8 @@ def behavior_collapse_key(a):
     data response vs a login-wall response to the same endpoint) never merge."""
     return (a.get('scheme', ''), a['host'], a.get('port', 0), a['method'],
             a['endpoint_template'], a['status_code'],
-            a['req_features']['auth_role'], a.get('access_class', ''))
+            a['req_features']['auth_role'], a.get('access_class', ''),
+            bool(a['req_features'].get('credential_present')))
 
 
 def behavior_variant_key(a):

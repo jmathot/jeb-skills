@@ -41,7 +41,7 @@ def _representative(items):
         bool(i.get('resp_body_truncated')),
         -len(i.get('resp_schema_keys', [])),
         -len(i.get('resp_distilled', '')),
-        -len(i.get('raw', '')),
+        -int(i.get('resp_body_length', len(i.get('raw', '')))),
         i.get('time', ''),
     ))
 
@@ -83,6 +83,11 @@ def build(annotated):
                              f"examples ---\n" + "\n".join(example_urls))
 
         metadata = {
+            'evidence_count': len(items),
+            'exchange_id': rep.get('exchange_id', ''),
+            'capture_id': rep.get('capture_id', ''),
+            'credential_present': reqf.get('credential_present', reqf['authenticated']),
+            'auth_state': reqf.get('auth_state', 'unknown'),
             'doc_kind': 'behavior',
             'scheme': rep['scheme'],
             'host': rep['host'],
@@ -104,7 +109,10 @@ def build(annotated):
             'time': rep['time'],
             # access control
             'access_class': rep.get('access_class', ''),
-            'anon_matches_auth': rep.get('anon_matches_auth', False),
+            'anon_matches_auth': any(i.get('anon_matches_auth') for i in items),
+            'anon_schema_matches_credentialed': any(i.get('anon_schema_matches_credentialed') for i in items),
+            'content_match_example': next((i['exchange_id'] for i in items if i.get('anon_matches_auth')), ''),
+            'schema_match_example': next((i['exchange_id'] for i in items if i.get('anon_schema_matches_credentialed')), ''),
             # security (compact)
             'authenticated': reqf['authenticated'],
             'auth_role': reqf['auth_role'],
@@ -119,6 +127,7 @@ def build(annotated):
             'redirect_location': respf['redirect_location'],
             'resp_body_sha256': rep.get('resp_body_sha256', ''),
             'resp_body_truncated': rep.get('resp_body_truncated', False),
+            'req_body_truncated': rep.get('req_body_truncated', False),
             'resp_decode_error': rep.get('resp_decode_error', ''),
             'variant_count': len(variant_groups),
             'variant_ids': _csv(variant_ids),
@@ -132,18 +141,20 @@ def build(annotated):
     return chunks
 
 
-def build_segments(annotated):
+def build_segments(annotated, parents=None):
     groups = OrderedDict()
     for a in annotated:
         groups.setdefault(d.behavior_collapse_key(a), []).append(a)
 
     chunks = []
+    parent_metadata = {p['id']: p['metadata'] for p in (parents or [])}
     for items in groups.values():
         rep = _representative(items)
         parent_id = d.behavior_id(rep)
-        parent_meta = build(items)[0]['metadata']
+        parent_meta = parent_metadata.get(parent_id) or build(items)[0]['metadata']
+        rep = dict(rep, anon_matches_auth=parent_meta['anon_matches_auth'])
         for representation, text in d.behavior_segment_texts(rep).items():
-            metadata = dict(parent_meta)
+            metadata = segment_metadata(parent_meta)
             metadata.update({'parent_id': parent_id, 'representation': representation,
                              'granularity': 'segment'})
             chunks.append({
@@ -176,6 +187,11 @@ def build_variants(annotated):
                 'representation': 'variant',
                 'granularity': 'variant',
                 'instance_count': len(variant_items),
+                'evidence_count': len(variant_items),
+                'anon_matches_auth': any(i.get('anon_matches_auth') for i in variant_items),
+                'anon_schema_matches_credentialed': any(i.get('anon_schema_matches_credentialed') for i in variant_items),
+                'content_match_example': next((i['exchange_id'] for i in variant_items if i.get('anon_matches_auth')), ''),
+                'schema_match_example': next((i['exchange_id'] for i in variant_items if i.get('anon_schema_matches_credentialed')), ''),
                 'param_names': _csv(rep.get('param_names', [])),
                 'req_content_type': rep.get('req_content_type', ''),
                 'req_schema_sig': rep.get('req_schema_sig', ''),
@@ -199,10 +215,18 @@ def build_variants(annotated):
     return chunks
 
 
+def segment_metadata(meta):
+    """Searchable scalar facets, without aggregate evidence/variant payloads."""
+    excluded = {'evidence_ids', 'variant_ids', 'summary', 'resp_body_sha256',
+                'exchange_id', 'capture_id', 'time', 'example_ids', 'entity_ids',
+                'produced_by', 'consumed_by'}
+    return {k: v for k, v in meta.items() if k not in excluded and not k.startswith('_')}
+
+
 def main():
     ap = argparse.ArgumentParser(description="J.E.B. v3 Phase 3a: build behavior docs")
     ap.add_argument('input_file', nargs='?', default='annotated_traffic.json')
-    ap.add_argument('-o', '--output', default='behavior_chunks.json')
+    ap.add_argument('-o', '--output', required=True, help='explicit export destination')
     args = ap.parse_args()
 
     with open(args.input_file) as f:

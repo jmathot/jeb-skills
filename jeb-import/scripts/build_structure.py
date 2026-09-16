@@ -10,8 +10,9 @@ import json
 from collections import Counter, OrderedDict, defaultdict
 
 import distill as d
+from build_behavior import segment_metadata
 
-CORS_RANK = {'*': 4, 'reflected': 3, 'null': 2, 'specific': 1, '': 0}
+CORS_RANK = {'*': 4, 'matches-origin': 3, 'null': 2, 'specific': 1, '': 0}
 ENTITY_JACCARD_THRESHOLD = 0.6
 
 
@@ -273,7 +274,9 @@ def build_entities(nodes):
     equal) schemas are recorded as lower-confidence `related` matches."""
     by_sig = OrderedDict()
     for n in nodes:
-        ep = (n['method'], n['endpoint_template'])
+        host = n['host']
+        host = f'[{host}]' if ':' in host else host
+        ep = (n['method'], f"{n['scheme']}://{host}:{n['port']}{n['endpoint_template']}")
         rsig, rkeys = n.get('resp_schema_sig', ''), n.get('resp_schema_keys', [])
         if rsig:
             e = by_sig.setdefault(rsig, {'keys': rkeys, 'produced_by': [], 'consumed_by': []})
@@ -294,15 +297,21 @@ def build_entities(nodes):
         entities.append(e)
         entity_of[sig] = d.md5(f"entity|{sig}")
 
-    for i, e1 in enumerate(entities):
-        related = []
-        for j, e2 in enumerate(entities):
-            if i == j:
+    key_sets = [set(e['keys']) for e in entities]
+    related = [[] for _ in entities]
+    for i, left in enumerate(key_sets):
+        for j in range(i + 1, len(key_sets)):
+            right = key_sets[j]
+            if not left or not right:
                 continue
-            score = _jaccard(e1['keys'], e2['keys'])
+            if min(len(left), len(right)) / max(len(left), len(right)) < ENTITY_JACCARD_THRESHOLD:
+                continue
+            score = len(left & right) / len(left | right)
             if score >= ENTITY_JACCARD_THRESHOLD:
-                related.append((e2['schema_sig'], round(score, 2)))
-        e1['related'] = sorted(related, key=lambda x: -x[1])[:5]
+                related[i].append((entities[j]['schema_sig'], round(score, 2)))
+                related[j].append((entities[i]['schema_sig'], round(score, 2)))
+    for entity, matches in zip(entities, related):
+        entity['related'] = sorted(matches, key=lambda x: (-x[1], x[0]))[:5]
 
     return entities, entity_of
 
@@ -359,7 +368,7 @@ def build_segments(nodes, auth_models, entity_of=None, entities=None):
     for node in nodes:
         parent = endpoint_chunk(node, entity_of)
         for representation, text in d.structure_segment_texts(node).items():
-            metadata = dict(parent['metadata'])
+            metadata = segment_metadata(parent['metadata'])
             metadata.update({'parent_id': parent['id'], 'representation': representation,
                              'granularity': 'segment'})
             chunks.append({
@@ -371,7 +380,7 @@ def build_segments(nodes, auth_models, entity_of=None, entities=None):
             })
     for origin, model in auth_models.items():
         parent = auth_model_chunk(origin, model)
-        metadata = dict(parent['metadata'])
+        metadata = segment_metadata(parent['metadata'])
         metadata.update({'parent_id': parent['id'], 'representation': 'auth_model',
                          'granularity': 'segment'})
         chunks.append({
@@ -382,7 +391,7 @@ def build_segments(nodes, auth_models, entity_of=None, entities=None):
         })
     for entity in (entities or []):
         parent = entity_chunk(entity, (entity_of or {})[entity['schema_sig']])
-        metadata = dict(parent['metadata'])
+        metadata = segment_metadata(parent['metadata'])
         metadata.update({'parent_id': parent['id'], 'representation': 'entity',
                          'granularity': 'segment'})
         chunks.append({
@@ -397,7 +406,7 @@ def build_segments(nodes, auth_models, entity_of=None, entities=None):
 def main():
     ap = argparse.ArgumentParser(description="J.E.B. v3 Phase 3b: build structure docs")
     ap.add_argument('input_file', nargs='?', default='annotated_traffic.json')
-    ap.add_argument('-o', '--output', default='structure_chunks.json')
+    ap.add_argument('-o', '--output', required=True, help='explicit export destination')
     args = ap.parse_args()
 
     with open(args.input_file) as f:
