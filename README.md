@@ -46,9 +46,9 @@ chosen dependency set in your deployment environment before pinning it.
 
 ```bash
 ./install-skills.sh
-python3 -m venv ~/.config/opencode/skill/jeb-import/scripts/venv
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/pip install \
-  -r ~/.config/opencode/skill/jeb-import/scripts/requirements.txt
+python3 -m venv ~/.config/opencode/skills/jeb-import/scripts/venv
+~/.config/opencode/skills/jeb-import/scripts/venv/bin/pip install \
+  -r ~/.config/opencode/skills/jeb-import/scripts/requirements.txt
 ollama pull embeddinggemma:latest
 ```
 
@@ -59,7 +59,7 @@ Select **J.E.B.E.D.I.A.H.** with Tab.
 ## Import
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh capture.xml /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh capture.xml /path/to/project
 ```
 
 Optional flags:
@@ -78,10 +78,10 @@ the parser version is current; current project indexes skip analysis.
 ### Streaming operations
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh rebuild /path/to/project
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh status /path/to/project
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh abandon <failed_capture_id> /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh rebuild /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh status /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh abandon <failed_capture_id> /path/to/project
 ```
 
 Normal import persists only Chroma data and its writer lock. No intermediate JSON
@@ -99,7 +99,7 @@ invocation continues to work.
 Diagnostic export requires an explicit destination that does not already exist:
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh export /path/to/project \
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh export /path/to/project \
   --collection behavior --output /path/to/behavior.ndjson
 ```
 
@@ -144,7 +144,7 @@ collapsed representative documents.
 Run from the engagement project directory, or pass `--db-path /path/to/chroma_db`.
 
 ```bash
-JQ=~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh
+JQ=~/.config/opencode/skills/jeb-query/scripts/jeb-query.sh
 "$JQ" endpoint https://app.example:8443/api/orders/42
 "$JQ" map --limit 50 --offset 0
 "$JQ" search "password reset email" --method POST
@@ -210,8 +210,8 @@ correlation leads, not proof of shared record identity across services.
 Install `jeb-import/scripts/requirements-viz.txt` in the shared environment, then:
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/python \
-  ~/.config/opencode/skill/jeb-import/scripts/visualize.py \
+~/.config/opencode/skills/jeb-import/scripts/venv/bin/python \
+  ~/.config/opencode/skills/jeb-import/scripts/visualize.py \
   --db-path ./chroma_db --mode graph --out site_map.html
 ```
 

@@ -8,7 +8,7 @@ description: Stream Burp Suite XML captures into a cumulative project-local Chro
 Run in the engagement project, separate from the skill repository:
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project
 ```
 
 Legacy `capture.xml [project_dir]` invocation also works. Normal import persists
@@ -19,16 +19,16 @@ Prerequisites: Python 3.10+, Ollama 0.11.10+ with `embeddinggemma:latest` pulled
 and the shared environment:
 
 ```bash
-python3 -m venv ~/.config/opencode/skill/jeb-import/scripts/venv
-~/.config/opencode/skill/jeb-import/scripts/venv/bin/pip install -r ~/.config/opencode/skill/jeb-import/scripts/requirements.txt
+python3 -m venv ~/.config/opencode/skills/jeb-import/scripts/venv
+~/.config/opencode/skills/jeb-import/scripts/venv/bin/pip install -r ~/.config/opencode/skills/jeb-import/scripts/requirements.txt
 ```
 
 ## Operations
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh rebuild /path/to/project
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh status /path/to/project
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh abandon <capture_id> /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh rebuild /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh status /path/to/project
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh abandon <capture_id> /path/to/project
 ```
 
 Rebuild needs no XML: it reads retained observations. Failed/interrupted captures
@@ -84,7 +84,7 @@ the database as a profile-migration step. Legacy JSON/SQLite files remain untouc
 Only deliberate export writes diagnostics, at a required unused destination:
 
 ```bash
-~/.config/opencode/skill/jeb-import/scripts/process_burp.sh export /path/to/project \
+~/.config/opencode/skills/jeb-import/scripts/process_burp.sh export /path/to/project \
   --collection behavior --output /path/to/behavior.ndjson
 ```
 

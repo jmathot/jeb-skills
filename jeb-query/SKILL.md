@@ -8,7 +8,7 @@ description: Investigate endpoints, map an app, inspect HTTP/auth/CORS behavior,
 Run each command with the complete installed script path:
 
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh endpoint https://app.example/api/orders/42
+~/.config/opencode/skills/jeb-query/scripts/jeb-query.sh endpoint https://app.example/api/orders/42
 ```
 
 Run from the engagement project, or supply `--db-path /path/to/chroma_db`.
@@ -73,7 +73,7 @@ Add `--original` to include original HTTP base64; it is omitted by default.
 For text outside retained representative previews:
 
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh search --in exchanges \
+~/.config/opencode/skills/jeb-query/scripts/jeb-query.sh search --in exchanges \
   --host app.example --contains "SQLSyntaxError"
 ```
 
@@ -113,7 +113,7 @@ collection is exempt: it records vulnerability classes supplied during testing.
 ## Findings
 
 ```bash
-~/.config/opencode/skill/jeb-query/scripts/jeb-query.sh record-attack \
+~/.config/opencode/skills/jeb-query/scripts/jeb-query.sh record-attack \
   --vuln-class SQLi --endpoint https://app.example/api/search --method GET \
   --param q --payload "'" --status 500 --verdict inconclusive \
   --source-id <behavior-id> --evidence "Database error in response" \

@@ -4,10 +4,11 @@
 
 set -e
 
-# Define paths
+# Define V2 global paths. These are the locations discovered automatically by
+# OpenCode V2 for global skills and agents.
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OPENCODE_SKILL_DIR="${HOME}/.config/opencode/skill"
-OPENCODE_AGENT_DIR="${HOME}/.config/opencode/agent"
+OPENCODE_SKILL_DIR="${HOME}/.config/opencode/skills"
+OPENCODE_AGENT_DIR="${HOME}/.config/opencode/agents"
 AGENT_FILENAME="J.E.B.E.D.I.A.H..md"
 
 # Skills to install
