@@ -86,6 +86,13 @@ Set RAG hyperparameters as plugin `options` in `opencode.json(c)` (see
 | `ollamaTimeoutSeconds` | Embedding request timeout. |
 | `embedBatchDocs` / `embedBatchChars` | Documents and characters per embedding request (default 32 / 48000). Tuning lever only — EmbeddingGemma throughput is per-document, so larger batches gain little. |
 
+Semantic retrieval matches on the distilled `embed_text`, which spells protocol
+facts in searchable words (`cors: wildcard, access-control-allow-origin * allows
+any origin` rather than `cors: *`); `page_content` and `summary` keep the compact
+operator shorthand. **An existing project built before this expansion needs
+`jeb_import command=rebuild`** to benefit — findings and capture evidence are
+preserved, and only documents whose text changed are re-embedded.
+
 **Index-defining — changing any of these requires a rebuild** (`jeb import`
 `command=rebuild`), because they change the recorded embedding profile and the
 engine refuses queries against a mismatched database:
@@ -176,11 +183,37 @@ engine/query/   Python query CLI (agent_interface.py + modules)
 engine/.venv/   auto-created on first load
 ```
 
-## Verification
+## Testing
 
-Runtime and retrieval evaluation are performed in the separate deployment
-environment, against a real capture.
+`tests/` holds a benchmark suite built on one committed Burp export. The capture
+is generated, so its ground truth is known without running the engine:
+`tests/make_capture.py` writes both `tests/capture.xml` (296 items, single
+origin) and `tests/ground_truth.json` (routes, entities, identifiers, keyword
+needles, and a graded semantic query set).
+
+```bash
+./tests/run.sh                    # all tiers against the cached import
+./tests/run.sh --tier a           # one tier; repeatable
+./tests/run.sh --fresh            # re-import first (see the caveat below)
+./tests/run.sh --update-baseline  # re-record tier B metrics and tier C digests
+```
+
+| Tier | Measures | Fails on |
+|---|---|---|
+| **A** `bench_correctness.py` | Route set, node kinds, access-control classification, entity grouping and fuzzy `related` scores, auth model, identifier lookups, evidence round trip, findings, `next` hints against the schemas in `src/tools.ts` | any changed derived fact |
+| **B** `bench_retrieval.py` | Recall@k, MRR, nDCG@k and precision over the graded query set at two depths; keyword `contains` against an independent decoder; vulnerability-jargon screening | a metric below its committed floor, oracle disagreement, or a screening change |
+| **C** `bench_perf.py` | Phase timings, Chroma/Ollama/HTML-parse call counts, query latency percentiles against the process floor, peak RSS, `build_entities` scaling curve, and the bit-identical export gate | only the bit-identical gate; timings are reported, never gated |
+
+The import is cached in `tests/.work/<capture-sha>/`, so tiers A and B reuse one
+database and only tier C pays for a cold import.
+
+**Changing the ingest path needs `--fresh`.** Feature extraction results are
+persisted per observation as `_features` and a rebuild reuses them while
+`FEATURE_VERSION` is unchanged, so edits to `parse.py` or to the feature
+extraction in `distill.py` / `normalize.py` / `streaming.py` are invisible to a
+rebuild-only run.
 
 Every response carries a `next` list of follow-up calls in tool shorthand
 (`jeb query command=get target=<id>`), produced by `engine/query/hints.py` — the
 single formatter for those hints, so they cannot drift from the tool contract.
+Tier A checks each hint against the tool schemas, which is what keeps them honest.

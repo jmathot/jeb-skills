@@ -1,0 +1,111 @@
+{
+  "calls": {
+    "chroma.get": 92,
+    "chroma.update": 17,
+    "chroma.upsert": 54,
+    "features.extract": 296,
+    "html.parse": 243,
+    "ollama.embed_documents": 23
+  },
+  "capture": {
+    "bytes": 723149,
+    "items": 296
+  },
+  "entity_scaling": {
+    "1000": {
+      "entities": 1000,
+      "ms": 295.5
+    },
+    "200": {
+      "entities": 200,
+      "ms": 10.7
+    },
+    "2000": {
+      "entities": 2000,
+      "ms": 1118.5
+    },
+    "500": {
+      "entities": 500,
+      "ms": 66.5
+    }
+  },
+  "import": {
+    "forced_rebuild": 0.695,
+    "ingest": 3.56,
+    "rebuild_from_ingest": 29.762,
+    "total": 34.017
+  },
+  "note": "Timings and RSS are machine-specific and are reported as deltas only, never gated. Call counts and the collection digests are machine-independent.",
+  "peak_rss_mb": 173.4,
+  "phases": {
+    "annotate_features": {
+      "calls": 2,
+      "seconds": 0.685
+    },
+    "build_endpoint_nodes": {
+      "calls": 2,
+      "seconds": 0.003
+    },
+    "build_entities": {
+      "calls": 2,
+      "seconds": 0.0
+    },
+    "extract_features": {
+      "calls": 296,
+      "seconds": 1.141
+    },
+    "hydrate_chunks": {
+      "calls": 2,
+      "seconds": 18.218
+    },
+    "store": {
+      "calls": 4,
+      "seconds": 29.194
+    }
+  },
+  "query_latency": {
+    "attacks": {
+      "n": 3,
+      "p50_ms": 557.0,
+      "p50_net_ms": 169.1,
+      "p95_ms": 563.6
+    },
+    "contains": {
+      "n": 3,
+      "p50_ms": 659.2,
+      "p50_net_ms": 271.3,
+      "p95_ms": 684.9
+    },
+    "endpoint": {
+      "n": 3,
+      "p50_ms": 668.4,
+      "p50_net_ms": 280.5,
+      "p95_ms": 680.0
+    },
+    "get": {
+      "n": 3,
+      "p50_ms": 596.5,
+      "p50_net_ms": 208.6,
+      "p95_ms": 597.0
+    },
+    "identifier": {
+      "n": 3,
+      "p50_ms": 599.0,
+      "p50_net_ms": 211.1,
+      "p95_ms": 626.2
+    },
+    "map": {
+      "n": 3,
+      "p50_ms": 660.0,
+      "p50_net_ms": 272.1,
+      "p95_ms": 687.2
+    },
+    "process_floor_ms": 387.9,
+    "search": {
+      "n": 20,
+      "p50_ms": 714.9,
+      "p50_net_ms": 327.0,
+      "p95_ms": 800.3
+    }
+  }
+}

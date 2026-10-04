@@ -1,0 +1,1415 @@
+{
+  "generated_by": "tests/make_capture.py",
+  "origin": {
+    "scheme": "https",
+    "host": "app.example",
+    "port": 443
+  },
+  "capture": {
+    "items": 296,
+    "bytes": 723149,
+    "sha256": "439cea7482d91cfb957c174248551d0cf88b76497477a3060136e40a506cbf0c"
+  },
+  "routes": [
+    {
+      "ref": "GET https://app.example:443/about",
+      "method": "GET",
+      "endpoint_template": "/about",
+      "node_kind": "page",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/addresses",
+      "method": "GET",
+      "endpoint_template": "/addresses",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/addresses/{id}",
+      "method": "GET",
+      "endpoint_template": "/api/addresses/{id}",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "enforced",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/admin/{id}",
+      "method": "GET",
+      "endpoint_template": "/api/admin/{id}",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "enforced",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/alerts/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/alerts/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/batches/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/batches/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/bundles/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/bundles/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/campaigns/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/campaigns/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/carriers/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/carriers/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/carts/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/carts/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/consents/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/consents/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/contracts/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/contracts/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/coupons/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/coupons/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/credits/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/credits/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/customers/{id}",
+      "method": "GET",
+      "endpoint_template": "/api/customers/{id}",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "enforced",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/customers/{id}/address",
+      "method": "GET",
+      "endpoint_template": "/api/customers/{id}/address",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/customers/{id}/profile",
+      "method": "GET",
+      "endpoint_template": "/api/customers/{id}/profile",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/devices/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/devices/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/discounts/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/discounts/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/exports/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/exports/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/imports/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/imports/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/invoices/{id}",
+      "method": "GET",
+      "endpoint_template": "/api/invoices/{id}",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "soft-auth-wall",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/jobs/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/jobs/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/kits/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/kits/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/ledgers/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/ledgers/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/messages/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/messages/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/notes/{id}",
+      "method": "GET",
+      "endpoint_template": "/api/notes/{id}",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/orders/{id}",
+      "method": "GET",
+      "endpoint_template": "/api/orders/{id}",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/api/orders/{id}/detail",
+      "method": "GET",
+      "endpoint_template": "/api/orders/{id}/detail",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "soft-auth-wall",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/orders/{id}/tags",
+      "method": "GET",
+      "endpoint_template": "/api/orders/{id}/tags",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/payouts/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/payouts/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/policies/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/policies/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/products/{id}",
+      "method": "GET",
+      "endpoint_template": "/api/products/{id}",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/api/public/rates",
+      "method": "GET",
+      "endpoint_template": "/api/public/rates",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/api/quotas/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/quotas/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/ratings/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/ratings/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/refunds/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/refunds/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/regions/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/regions/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/renewals/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/renewals/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/returns/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/returns/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/reviews/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/reviews/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/schedules/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/schedules/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/scopes/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/scopes/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/search",
+      "method": "GET",
+      "endpoint_template": "/api/search",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [
+        "q"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/segments/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/segments/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/session",
+      "method": "GET",
+      "endpoint_template": "/api/session",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "soft-auth-wall",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/shipments/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/shipments/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/taxes/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/taxes/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/templates/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/templates/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/terms/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/terms/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/tickets/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/tickets/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/tokens/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/tokens/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/vendors/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/vendors/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/warehouses/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/warehouses/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/webhooks/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/webhooks/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/api/wishlists/{id}/stats",
+      "method": "GET",
+      "endpoint_template": "/api/wishlists/{id}/stats",
+      "node_kind": "endpoint",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/audit",
+      "method": "GET",
+      "endpoint_template": "/audit",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "enforced",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/contact",
+      "method": "GET",
+      "endpoint_template": "/contact",
+      "node_kind": "page",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/customers",
+      "method": "GET",
+      "endpoint_template": "/customers",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "enforced",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/dashboard",
+      "method": "GET",
+      "endpoint_template": "/dashboard",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/faq",
+      "method": "GET",
+      "endpoint_template": "/faq",
+      "node_kind": "page",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/help",
+      "method": "GET",
+      "endpoint_template": "/help",
+      "node_kind": "page",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/invoices",
+      "method": "GET",
+      "endpoint_template": "/invoices",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/legacy/{id}",
+      "method": "GET",
+      "endpoint_template": "/legacy/{id}",
+      "node_kind": "page",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "soft-auth-wall",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/login",
+      "method": "GET",
+      "endpoint_template": "/login",
+      "node_kind": "page",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "soft-auth-wall",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/orders",
+      "method": "GET",
+      "endpoint_template": "/orders",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/priv",
+      "method": "GET",
+      "endpoint_template": "/priv",
+      "node_kind": "page",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "GET https://app.example:443/products",
+      "method": "GET",
+      "endpoint_template": "/products",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/profile",
+      "method": "GET",
+      "endpoint_template": "/profile",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/reports",
+      "method": "GET",
+      "endpoint_template": "/reports",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "soft-auth-wall",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/s/{id}",
+      "method": "GET",
+      "endpoint_template": "/s/{id}",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/settings",
+      "method": "GET",
+      "endpoint_template": "/settings",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/static/app.css",
+      "method": "GET",
+      "endpoint_template": "/static/app.css",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/static/app.js",
+      "method": "GET",
+      "endpoint_template": "/static/app.js",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/static/app.map",
+      "method": "GET",
+      "endpoint_template": "/static/app.map",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/static/icons.svg",
+      "method": "GET",
+      "endpoint_template": "/static/icons.svg",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/static/print.css",
+      "method": "GET",
+      "endpoint_template": "/static/print.css",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/static/vendor.js",
+      "method": "GET",
+      "endpoint_template": "/static/vendor.js",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/tos",
+      "method": "GET",
+      "endpoint_template": "/tos",
+      "node_kind": "page",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "open-data",
+      "anon_allowed": true
+    },
+    {
+      "ref": "PATCH https://app.example:443/api/orders/{id}",
+      "method": "PATCH",
+      "endpoint_template": "/api/orders/{id}",
+      "node_kind": "action",
+      "authenticated_ever": true,
+      "params": [
+        "customer_id",
+        "id",
+        "status",
+        "tag",
+        "total"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "POST https://app.example:443/api/customers/{id}/address",
+      "method": "POST",
+      "endpoint_template": "/api/customers/{id}/address",
+      "node_kind": "action",
+      "authenticated_ever": true,
+      "params": [
+        "city",
+        "country",
+        "id",
+        "line1",
+        "postal_code"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "POST https://app.example:443/api/orders",
+      "method": "POST",
+      "endpoint_template": "/api/orders",
+      "node_kind": "action",
+      "authenticated_ever": true,
+      "params": [
+        "customer_id",
+        "id",
+        "status",
+        "total"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "POST https://app.example:443/api/products",
+      "method": "POST",
+      "endpoint_template": "/api/products",
+      "node_kind": "action",
+      "authenticated_ever": true,
+      "params": [
+        "id",
+        "price",
+        "sku"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "POST https://app.example:443/login",
+      "method": "POST",
+      "endpoint_template": "/login",
+      "node_kind": "action",
+      "authenticated_ever": false,
+      "params": [
+        "csrf",
+        "email",
+        "password"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "PUT https://app.example:443/api/addresses/{id}",
+      "method": "PUT",
+      "endpoint_template": "/api/addresses/{id}",
+      "node_kind": "action",
+      "authenticated_ever": true,
+      "params": [
+        "city",
+        "country",
+        "id",
+        "line1",
+        "postal_code",
+        "region"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "PUT https://app.example:443/api/invoices/{id}",
+      "method": "PUT",
+      "endpoint_template": "/api/invoices/{id}",
+      "node_kind": "action",
+      "authenticated_ever": true,
+      "params": [
+        "amount",
+        "created_at",
+        "currency",
+        "customer_id",
+        "due_at",
+        "id",
+        "number",
+        "status",
+        "total"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "PUT https://app.example:443/api/orders/{id}",
+      "method": "PUT",
+      "endpoint_template": "/api/orders/{id}",
+      "node_kind": "action",
+      "authenticated_ever": true,
+      "params": [
+        "customer_id",
+        "id",
+        "status",
+        "total"
+      ],
+      "access_control": "unknown",
+      "anon_allowed": false
+    }
+  ],
+  "entities": [
+    {
+      "name": "address",
+      "fields": [
+        "city",
+        "country",
+        "id",
+        "line1",
+        "postal_code"
+      ],
+      "produced_by": [
+        "GET https://app.example:443/api/customers/{id}/address",
+        "POST https://app.example:443/api/customers/{id}/address"
+      ],
+      "consumed_by": [
+        "POST https://app.example:443/api/customers/{id}/address"
+      ],
+      "route_count": 2,
+      "related": [
+        {
+          "name": "address_region",
+          "score": 0.83
+        }
+      ]
+    },
+    {
+      "name": "address_region",
+      "fields": [
+        "city",
+        "country",
+        "id",
+        "line1",
+        "postal_code",
+        "region"
+      ],
+      "produced_by": [
+        "GET https://app.example:443/api/addresses/{id}",
+        "PUT https://app.example:443/api/addresses/{id}"
+      ],
+      "consumed_by": [
+        "PUT https://app.example:443/api/addresses/{id}"
+      ],
+      "route_count": 2,
+      "related": [
+        {
+          "name": "address",
+          "score": 0.83
+        }
+      ]
+    },
+    {
+      "name": "customer",
+      "fields": [
+        "email",
+        "id",
+        "name"
+      ],
+      "produced_by": [
+        "GET https://app.example:443/api/customers/{id}",
+        "GET https://app.example:443/api/customers/{id}/profile"
+      ],
+      "consumed_by": [],
+      "route_count": 2,
+      "related": []
+    },
+    {
+      "name": "invoice_wide",
+      "fields": [
+        "amount",
+        "created_at",
+        "currency",
+        "customer_id",
+        "due_at",
+        "id",
+        "number",
+        "status",
+        "total"
+      ],
+      "produced_by": [
+        "GET https://app.example:443/api/invoices/{id}",
+        "PUT https://app.example:443/api/invoices/{id}"
+      ],
+      "consumed_by": [
+        "PUT https://app.example:443/api/invoices/{id}"
+      ],
+      "route_count": 2,
+      "related": []
+    },
+    {
+      "name": "order",
+      "fields": [
+        "customer_id",
+        "id",
+        "status",
+        "total"
+      ],
+      "produced_by": [
+        "GET https://app.example:443/api/orders/{id}",
+        "POST https://app.example:443/api/orders"
+      ],
+      "consumed_by": [
+        "POST https://app.example:443/api/orders",
+        "PUT https://app.example:443/api/orders/{id}"
+      ],
+      "route_count": 3,
+      "related": [
+        {
+          "name": "order_note",
+          "score": 0.8
+        },
+        {
+          "name": "order_tag",
+          "score": 0.8
+        }
+      ]
+    },
+    {
+      "name": "order_note",
+      "fields": [
+        "customer_id",
+        "id",
+        "note",
+        "status",
+        "total"
+      ],
+      "produced_by": [
+        "GET https://app.example:443/api/orders/{id}/detail",
+        "PUT https://app.example:443/api/orders/{id}"
+      ],
+      "consumed_by": [],
+      "route_count": 2,
+      "related": [
+        {
+          "name": "order",
+          "score": 0.8
+        },
+        {
+          "name": "order_tag",
+          "score": 0.67
+        }
+      ]
+    },
+    {
+      "name": "order_tag",
+      "fields": [
+        "customer_id",
+        "id",
+        "status",
+        "tag",
+        "total"
+      ],
+      "produced_by": [
+        "GET https://app.example:443/api/orders/{id}/tags",
+        "PATCH https://app.example:443/api/orders/{id}"
+      ],
+      "consumed_by": [
+        "PATCH https://app.example:443/api/orders/{id}"
+      ],
+      "route_count": 2,
+      "related": [
+        {
+          "name": "order",
+          "score": 0.8
+        },
+        {
+          "name": "order_note",
+          "score": 0.67
+        }
+      ]
+    },
+    {
+      "name": "product",
+      "fields": [
+        "id",
+        "price",
+        "sku"
+      ],
+      "produced_by": [
+        "GET https://app.example:443/api/products/{id}",
+        "POST https://app.example:443/api/products"
+      ],
+      "consumed_by": [
+        "POST https://app.example:443/api/products"
+      ],
+      "route_count": 2,
+      "related": []
+    }
+  ],
+  "non_entities": [
+    "quoted_note",
+    "rates",
+    "session_info"
+  ],
+  "entity_threshold": 0.6,
+  "identifiers": [
+    {
+      "value": "9000",
+      "exact_hits": 1,
+      "fields": [
+        "response.id"
+      ],
+      "templates": [
+        "/api/notes/{id}"
+      ]
+    },
+    {
+      "value": "300",
+      "exact_hits": 1,
+      "fields": [
+        "url.admin"
+      ],
+      "templates": [
+        "/api/admin/{id}"
+      ]
+    },
+    {
+      "value": "4711",
+      "min_hits": 20,
+      "fields": [
+        "request.customer_id",
+        "response.customer_id",
+        "response.id",
+        "response.user_id",
+        "url.customers"
+      ],
+      "why": "one value shared by an order body, an invoice body and a customer record -- a cross-endpoint correlation lead"
+    }
+  ],
+  "needles": [
+    {
+      "name": "sql_error",
+      "text": "SQLSyntaxErrorException"
+    },
+    {
+      "name": "embedded_quote",
+      "text": "he said \\\"hello\\\" loudly",
+      "absent_from_stored_document": true,
+      "why": "present in the decoded HTTP text but escaped again inside the stored document, so where_document cannot prefilter it"
+    },
+    {
+      "name": "session_cookie",
+      "text": "sid-9f8e7d6c5b4a"
+    }
+  ],
+  "queries": [
+    {
+      "q": "order record returned by id",
+      "in": "structure",
+      "relevant": {
+        "entity:order": 2,
+        "GET https://app.example:443/api/orders/{id}": 2,
+        "POST https://app.example:443/api/orders": 1,
+        "GET https://app.example:443/api/orders/{id}/detail": 1
+      }
+    },
+    {
+      "q": "create a new order with a json request body",
+      "in": "structure",
+      "relevant": {
+        "POST https://app.example:443/api/orders": 2,
+        "PUT https://app.example:443/api/orders/{id}": 1,
+        "entity:order": 1
+      }
+    },
+    {
+      "q": "customer name and email address",
+      "in": "structure",
+      "relevant": {
+        "entity:customer": 2,
+        "GET https://app.example:443/api/customers/{id}": 2,
+        "GET https://app.example:443/api/customers/{id}/profile": 2
+      }
+    },
+    {
+      "q": "postal address with city country and line1 fields",
+      "in": "structure",
+      "relevant": {
+        "entity:address": 2,
+        "entity:address_region": 2,
+        "GET https://app.example:443/api/addresses/{id}": 2,
+        "GET https://app.example:443/api/customers/{id}/address": 2,
+        "POST https://app.example:443/api/customers/{id}/address": 1
+      }
+    },
+    {
+      "q": "product sku and price",
+      "in": "structure",
+      "relevant": {
+        "entity:product": 2,
+        "GET https://app.example:443/api/products/{id}": 2,
+        "POST https://app.example:443/api/products": 2
+      }
+    },
+    {
+      "q": "invoice with currency amount and due date",
+      "in": "structure",
+      "relevant": {
+        "entity:invoice_wide": 2,
+        "GET https://app.example:443/api/invoices/{id}": 2,
+        "PUT https://app.example:443/api/invoices/{id}": 2
+      }
+    },
+    {
+      "q": "session cookie issued when signing in",
+      "in": "structure",
+      "relevant": {
+        "auth_model": 2,
+        "POST https://app.example:443/login": 2,
+        "GET https://app.example:443/login": 1
+      }
+    },
+    {
+      "q": "reachable with no credential at all",
+      "in": "structure",
+      "relevant": {
+        "GET https://app.example:443/api/public/rates": 2,
+        "GET https://app.example:443/api/orders/{id}": 1,
+        "GET https://app.example:443/api/products/{id}": 1,
+        "GET https://app.example:443/orders": 1,
+        "GET https://app.example:443/tos": 1,
+        "GET https://app.example:443/priv": 1
+      }
+    },
+    {
+      "q": "html page listing records in a table",
+      "in": "structure",
+      "relevant": {
+        "GET https://app.example:443/orders": 2,
+        "GET https://app.example:443/dashboard": 2,
+        "GET https://app.example:443/customers": 1,
+        "GET https://app.example:443/invoices": 1,
+        "GET https://app.example:443/products": 1,
+        "GET https://app.example:443/s/{id}": 1
+      }
+    },
+    {
+      "q": "wildcard cross origin resource sharing header",
+      "in": "structure",
+      "relevant": {
+        "GET https://app.example:443/api/public/rates": 2
+      }
+    },
+    {
+      "q": "updates an existing record in place",
+      "in": "structure",
+      "relevant": {
+        "PUT https://app.example:443/api/orders/{id}": 2,
+        "PUT https://app.example:443/api/invoices/{id}": 2,
+        "PUT https://app.example:443/api/addresses/{id}": 2,
+        "PATCH https://app.example:443/api/orders/{id}": 2
+      }
+    },
+    {
+      "q": "javascript and stylesheet assets",
+      "in": "structure",
+      "include_static": true,
+      "relevant": {
+        "GET https://app.example:443/static/app.js": 2,
+        "GET https://app.example:443/static/app.css": 2,
+        "GET https://app.example:443/static/vendor.js": 2,
+        "GET https://app.example:443/static/print.css": 2
+      }
+    },
+    {
+      "q": "shipment and refund counters",
+      "in": "structure",
+      "relevant": {
+        "GET https://app.example:443/api/shipments/{id}/stats": 2,
+        "GET https://app.example:443/api/refunds/{id}/stats": 2,
+        "GET https://app.example:443/api/returns/{id}/stats": 1,
+        "GET https://app.example:443/api/payouts/{id}/stats": 1
+      }
+    },
+    {
+      "q": "server error exposing a database stack trace",
+      "in": "behavior",
+      "relevant": {
+        "GET https://app.example:443/api/search": 2
+      }
+    },
+    {
+      "q": "redirected to the sign in page",
+      "in": "behavior",
+      "relevant": {
+        "GET https://app.example:443/legacy/{id}": 2,
+        "GET https://app.example:443/api/invoices/{id}": 1,
+        "GET https://app.example:443/api/session": 1,
+        "GET https://app.example:443/api/orders/{id}/detail": 1,
+        "GET https://app.example:443/reports": 1
+      }
+    },
+    {
+      "q": "forbidden response to a request with no cookie",
+      "in": "behavior",
+      "relevant": {
+        "GET https://app.example:443/api/customers/{id}": 2,
+        "GET https://app.example:443/api/addresses/{id}": 2,
+        "GET https://app.example:443/api/admin/{id}": 2,
+        "GET https://app.example:443/customers": 1,
+        "GET https://app.example:443/audit": 1
+      }
+    },
+    {
+      "q": "json object describing one order",
+      "in": "behavior",
+      "relevant": {
+        "GET https://app.example:443/api/orders/{id}": 2,
+        "POST https://app.example:443/api/orders": 1,
+        "PUT https://app.example:443/api/orders/{id}": 1
+      }
+    },
+    {
+      "q": "response that set a session cookie",
+      "in": "behavior",
+      "relevant": {
+        "POST https://app.example:443/login": 2
+      }
+    },
+    {
+      "q": "anonymous request served real page content",
+      "in": "behavior",
+      "relevant": {
+        "GET https://app.example:443/orders": 2,
+        "GET https://app.example:443/tos": 1,
+        "GET https://app.example:443/priv": 1,
+        "GET https://app.example:443/about": 1,
+        "GET https://app.example:443/api/public/rates": 1
+      }
+    },
+    {
+      "q": "created a new resource and returned it",
+      "in": "behavior",
+      "relevant": {
+        "POST https://app.example:443/api/orders": 2,
+        "POST https://app.example:443/api/products": 2,
+        "POST https://app.example:443/api/customers/{id}/address": 2
+      }
+    }
+  ],
+  "screened": [
+    {
+      "q": "sql injection in the orders endpoint",
+      "expect_rejected": [
+        "sql injection"
+      ],
+      "expect_action": "removed-terms"
+    },
+    {
+      "q": "idor on the customer record",
+      "expect_rejected": [
+        "idor"
+      ],
+      "expect_action": "removed-terms"
+    },
+    {
+      "q": "xss",
+      "expect_rejected": [
+        "xss"
+      ],
+      "expect_action": "removed-all"
+    },
+    {
+      "q": "broken access control",
+      "expect_rejected": [
+        "broken access control"
+      ],
+      "expect_action": "removed-all"
+    }
+  ],
+  "auth_model": {
+    "cookies_set": [
+      "session"
+    ],
+    "cookies_sent": [
+      "session",
+      "theme"
+    ],
+    "mechanisms": [
+      "cookie"
+    ]
+  }
+}

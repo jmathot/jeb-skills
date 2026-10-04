@@ -1102,18 +1102,128 @@ def distill_response(resp_class, body, resp_ct, redirect_location, boilerplate=N
 # ---------------------------------------------------------------------------
 # embed_text / summary formatters
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Retrieval vocabulary
+# ---------------------------------------------------------------------------
+# These expansions apply to embed_text ONLY. `page_content` and `summary` stay
+# in compact operator shorthand: they are read by someone who already knows the
+# vocabulary, whereas the embedding has to match the words a person actually
+# types. The facts were always recorded -- they were just spelled in a form with
+# no overlap with a natural-language query: `cors: *` is punctuation, and
+# `sets: session(Path,HttpOnly)` never contains the word "cookie". On the
+# benchmark query set, expanding them moved three unretrievable facets from
+# ranks 7 / 71 / 46 to rank 1 (cosine distance -0.04 / -0.10 / -0.11), taking
+# recall@8 from 0.648 to 0.878 and nDCG@8 from 0.621 to 0.824 with no query
+# scoring below its previous value. Changing any of this needs a project
+# rebuild; `store` re-embeds only the documents whose text actually moved.
+HEADER_WORDS = {short: full for full, short in SECURITY_HEADERS.items()}
+
+CORS_WORDS = {
+    '*': 'wildcard, access-control-allow-origin * allows any origin',
+    '* creds': 'wildcard with credentials, any origin plus '
+               'access-control-allow-credentials',
+    'null': 'null origin allowed',
+    'null creds': 'null origin allowed with credentials',
+    'matches-origin': 'reflects the request origin back in '
+                      'access-control-allow-origin',
+    'specific': 'one specific allowed origin',
+}
+
+ACCESS_CONTROL_WORDS = {
+    'open-data': 'anonymous requests are served real data, reachable with no '
+                 'credential, unauthenticated access allowed',
+    'soft-auth-wall': 'anonymous requests get a login page or redirect instead '
+                      'of a denial, soft authentication wall',
+    'enforced': 'anonymous requests are denied with 401 or 403, authentication '
+                'enforced',
+}
+
+# What the response actually delivered, from normalize._access_class.
+ACCESS_CLASS_WORDS = {
+    'data': 'real data was returned',
+    'auth_wall': 'an authentication wall, login page or login redirect was '
+                 'returned instead of data',
+    'shell': 'an empty single-page-application shell was returned, not data',
+    'denied': 'access was denied with 401 or 403',
+    'redirect': 'a redirect that is not a login redirect',
+    'empty': 'an empty response body',
+    'static': 'a static asset',
+    'other': 'a non-success response',
+    'unknown': 'the response body could not be classified',
+}
+
+# A method name is a verb the searcher does not necessarily type. Only the
+# mutating methods are expanded: GET is the majority of any capture, so glossing
+# it adds the same tokens to most documents, which dilutes without
+# discriminating. Measured on the benchmark set, including GET cost two queries
+# more than the mutating verbs gained.
+METHOD_WORDS = {
+    'POST': 'creates, submits, sends new data',
+    'PUT': 'replaces, updates an existing record in place',
+    'PATCH': 'partially updates an existing record',
+    'DELETE': 'removes, deletes a record',
+    'OPTIONS': 'preflight, advertises allowed methods',
+}
+
+AUTH_MECHANISM_WORDS = {
+    'cookie-session': 'session cookie',
+    'bearer-jwt': 'bearer token, json web token in the authorization header',
+    'bearer-opaque': 'opaque bearer token in the authorization header',
+    'basic': 'http basic authentication',
+    'api-key-header': 'api key header',
+    'custom-header': 'custom authentication header',
+    'none': 'no credential',
+}
+
+
+def header_words(names):
+    """csp -> content-security-policy, so the header is searchable by name."""
+    return [HEADER_WORDS.get(name, name) for name in names]
+
+
+def auth_words(mechanisms):
+    return [AUTH_MECHANISM_WORDS.get(m, m) for m in mechanisms]
+
+
+def access_class_words(value):
+    return ACCESS_CLASS_WORDS.get(value, value)
+
+
+def method_words(method):
+    return METHOD_WORDS.get((method or '').upper(), '')
+
+
+def cookie_words(entries):
+    """'session(Path,HttpOnly)' -> 'session cookie (path, httponly)'."""
+    out = []
+    for entry in entries:
+        name, _, flags = str(entry).partition('(')
+        flags = flags.rstrip(')').replace(',', ', ').strip().lower()
+        out.append(f"{name} cookie" + (f" ({flags})" if flags else ''))
+    return out
+
+
+def cors_words(value, credentials=False):
+    full = value + (' creds' if credentials else '')
+    return CORS_WORDS.get(full, full)
+
+
 def _security_clause(reqf, respf):
     sec = []
     if reqf.get('cookie_names'):
-        sec.append("cookies: " + ",".join(reqf['cookie_names'][:8]))
+        sec.append("sends cookies: " + ", ".join(
+            f"{name} cookie" for name in reqf['cookie_names'][:8]))
     if respf.get('set_cookies'):
-        sec.append("sets: " + ",".join(respf['set_cookies'][:6]))
+        sec.append("sets cookies with the set-cookie response header: "
+                   + ", ".join(cookie_words(respf['set_cookies'][:6])))
     if respf.get('security_headers_missing'):
-        sec.append("sec-missing: " + ",".join(respf['security_headers_missing']))
+        sec.append("missing security headers: "
+                   + ", ".join(header_words(respf['security_headers_missing'])))
     if respf.get('cors'):
-        sec.append("cors: " + respf['cors'] + (" creds" if respf.get('cors_credentials') else ""))
+        sec.append("cors: " + cors_words(respf['cors'],
+                                         respf.get('cors_credentials')))
     if reqf.get('origin_cross_site'):
-        sec.append("origin: cross-site")
+        sec.append("cross-site request origin")
     if reqf.get('jwt'):
         sec.append("jwt: " + reqf['jwt'])
     return sec
@@ -1141,7 +1251,8 @@ def behavior_embed_text(a) -> str:
 def behavior_segment_texts(a):
     """Protocol-aware child representations used by hybrid retrieval."""
     reqf, respf = a['req_features'], a['resp_features']
-    route = [f"request route {a['method']} {path_words(a['endpoint_template'])}",
+    route = [f"request route {a['method']} {path_words(a['endpoint_template'])}"
+             + (f" ({method_words(a['method'])})" if method_words(a['method']) else ''),
              a['endpoint_template'], f"host: {a['host']}"]
     if a['param_names']:
         route.append("parameters: " + ", ".join(a['param_names']))
@@ -1158,11 +1269,12 @@ def behavior_segment_texts(a):
     if a['resp_distilled']:
         response.append(a['resp_distilled'])
     if a.get('access_class'):
-        response.append("access outcome: " + a['access_class'])
+        response.append("access outcome: " + access_class_words(a['access_class']))
 
     security = [f"access and session behavior on {a['method']} {a['endpoint_template']}",
                 "auth role: " + (reqf.get('auth_role') or 'anonymous'),
-                "auth mechanism: " + (reqf.get('auth_mechanism') or 'none')]
+                "auth mechanism: "
+                + ", ".join(auth_words([reqf.get('auth_mechanism') or 'none']))]
     security.extend(_security_clause(reqf, respf))
     if a.get('anon_matches_auth'):
         security.append("anonymous response matches authenticated response")
@@ -1190,44 +1302,58 @@ def structure_embed_text(node) -> str:
         parts.append("params: " + ", ".join(node['param_names']))
     if node.get('produces'):
         parts.append("produces: " + ", ".join(node['produces']))
+    if node.get('resp_schema_keys'):
+        parts.append("response fields: " + ", ".join(node['resp_schema_keys'][:20]))
+    if node.get('req_schema_keys'):
+        parts.append("request fields: " + ", ".join(node['req_schema_keys'][:20]))
     if node.get('status_codes'):
         parts.append("statuses: " + ", ".join(str(s) for s in node['status_codes']))
     if node.get('auth_mechanisms'):
-        parts.append("auth: " + ", ".join(node['auth_mechanisms']))
+        parts.append("auth: " + ", ".join(auth_words(node['auth_mechanisms'])))
     if node.get('cookies_set'):
-        parts.append("sets: " + ", ".join(node['cookies_set'][:6]))
+        parts.append("sets cookies: " + ", ".join(
+            f"{name} cookie" for name in node['cookies_set'][:6]))
     if node.get('security_headers_missing'):
-        parts.append("sec-missing: " + ", ".join(node['security_headers_missing']))
+        parts.append("missing security headers: "
+                     + ", ".join(header_words(node['security_headers_missing'])))
     if node.get('cors'):
-        parts.append("cors: " + node['cors'])
+        parts.append("cors: " + cors_words(node['cors']))
     if node.get('access_control') and node['access_control'] != 'unknown':
-        parts.append("access: " + node['access_control'])
+        parts.append("access: " + ACCESS_CONTROL_WORDS[node['access_control']])
     return _truncate(" | ".join(parts), EMBED_TEXT_CAP)
 
 
 def structure_segment_texts(node):
     identity = [f"{node['node_kind']} route {node['method']} "
-                f"{path_words(node['endpoint_template'])}",
+                f"{path_words(node['endpoint_template'])}"
+                + (f" ({method_words(node['method'])})"
+                   if method_words(node['method']) else ''),
                 node['endpoint_template'], f"host: {node['host']}"]
     if node['param_names']:
         identity.append("parameters: " + ", ".join(node['param_names']))
     if node.get('produces'):
         identity.append("produces: " + ", ".join(node['produces']))
+    if node.get('resp_schema_keys'):
+        identity.append("response fields: " + ", ".join(node['resp_schema_keys'][:20]))
+    if node.get('req_schema_keys'):
+        identity.append("request fields: " + ", ".join(node['req_schema_keys'][:20]))
 
     posture = [f"access posture for {node['method']} {node['endpoint_template']}"]
     if node.get('status_codes'):
         posture.append("statuses: " + ", ".join(str(s) for s in node['status_codes']))
-    if node.get('access_control'):
-        posture.append("access: " + node['access_control'])
+    if node.get('access_control') in ACCESS_CONTROL_WORDS:
+        posture.append("access: " + ACCESS_CONTROL_WORDS[node['access_control']])
     if node.get('auth_mechanisms'):
-        posture.append("authentication: " + ", ".join(node['auth_mechanisms']))
+        posture.append("authentication: "
+                       + ", ".join(auth_words(node['auth_mechanisms'])))
     if node.get('cookies_set'):
-        posture.append("sets cookies: " + ", ".join(node['cookies_set']))
+        posture.append("sets cookies with the set-cookie response header: "
+                       + ", ".join(f"{name} cookie" for name in node['cookies_set']))
     if node.get('security_headers_missing'):
-        posture.append("security headers missing: " +
-                       ", ".join(node['security_headers_missing']))
+        posture.append("missing security headers: "
+                       + ", ".join(header_words(node['security_headers_missing'])))
     if node.get('cors'):
-        posture.append("cors: " + node['cors'])
+        posture.append("cors: " + cors_words(node['cors']))
     return {
         'identity': _truncate(" | ".join(identity), EMBED_TEXT_CAP),
         'posture': _truncate(" | ".join(posture), EMBED_TEXT_CAP),
@@ -1246,21 +1372,22 @@ def structure_summary(node) -> str:
 def auth_model_embed_text(host, model) -> str:
     parts = [f"auth model {host}"]
     if model.get('auth_mechanisms'):
-        parts.append("mechanisms: " + ", ".join(model['auth_mechanisms']))
+        parts.append("mechanisms: " + ", ".join(auth_words(model['auth_mechanisms'])))
     if model.get('cookies_set_map'):
-        setmap = ", ".join(f"{c}@{','.join(sorted(ep)[:3])}"
+        setmap = ", ".join(f"{c} cookie@{','.join(sorted(ep)[:3])}"
                            for c, ep in list(model['cookies_set_map'].items())[:8])
-        parts.append("set: " + setmap)
+        parts.append("sets session cookies with the set-cookie header: " + setmap)
     if model.get('cookies_sent_map'):
-        sentmap = ", ".join(f"{c}@[{','.join(sorted(ep)[:4])}]"
+        sentmap = ", ".join(f"{c} cookie@[{','.join(sorted(ep)[:4])}]"
                             for c, ep in list(model['cookies_sent_map'].items())[:8])
-        parts.append("consumed: " + sentmap)
+        parts.append("consumes cookies: " + sentmap)
     if model.get('token'):
         parts.append("token: " + model['token'])
     if model.get('security_headers_missing'):
-        parts.append("posture: sec-missing " + ", ".join(model['security_headers_missing']))
+        parts.append("posture: missing security headers "
+                     + ", ".join(header_words(model['security_headers_missing'])))
     if model.get('cors'):
-        parts.append("cors: " + model['cors'])
+        parts.append("cors: " + cors_words(model['cors']))
     return _truncate(" | ".join(parts), EMBED_TEXT_CAP)
 
 
