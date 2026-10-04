@@ -19,6 +19,7 @@ import hashlib
 import json
 import re
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from urllib.parse import urlparse, parse_qs
 
 from bs4 import BeautifulSoup
@@ -980,6 +981,12 @@ def html_text_blocks(body: str):
     return blocks
 
 
+# Pure function of the body, but called several times for the *same* response
+# during one pass (variant signature, feature extraction, access classification).
+# Those calls cluster per record, so a tiny cache collapses them to one parse
+# while bounding how many bodies stay referenced. Caches the result, never the
+# soup: _strip_for_page returns a tree callers mutate.
+@lru_cache(maxsize=4)
 def page_fingerprint(body: str) -> str:
     """Structural skeleton hash of an HTML page: tag sequence + form field
     names/types + <title>, with all text and attribute *values* dropped. Stable

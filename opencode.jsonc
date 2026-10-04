@@ -17,6 +17,10 @@
         // --- Runtime / query-time (safe to change anytime) ---
         "ollamaTimeoutSeconds": 3600,
         "candidateCeiling": 1000,
+        // Embedding request sizing. Throughput is per-document, so these are a
+        // tuning lever rather than a speedup; the doc cap normally binds first.
+        "embedBatchDocs": 32,
+        "embedBatchChars": 48000,
         "maxDistance": { "structure": 0.65, "behavior": 0.7, "attacks": 0.7 },
         "depth": {
           "quick": { "candidateK": 20, "nResults": 5, "maxPerEndpoint": 1, "snippetLen": 120, "rawChars": 0 },

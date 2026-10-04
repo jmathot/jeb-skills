@@ -69,6 +69,18 @@ export function buildConfig(options: Options): BuiltConfig {
     else warnings.push(`candidateCeiling must be a positive integer; ignoring ${JSON.stringify(o.candidateCeiling)}.`)
   }
 
+  // Embedding batch budget: affects how many Ollama round trips an import makes,
+  // not the vectors themselves, so it needs no rebuild.
+  for (const [key, envName] of [
+    ["embedBatchDocs", "JEB_EMBED_BATCH_DOCS"],
+    ["embedBatchChars", "JEB_EMBED_BATCH_CHARS"],
+  ] as const) {
+    if (o[key] == null) continue
+    const n = Number(o[key])
+    if (Number.isInteger(n) && n > 0) env[envName] = String(n)
+    else warnings.push(`${key} must be a positive integer; ignoring ${JSON.stringify(o[key])}.`)
+  }
+
   const depth = o.depth ?? {}
   for (const name of DEPTHS) {
     const preset = depth[name] ?? {}

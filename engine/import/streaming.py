@@ -3,7 +3,12 @@ from collections import defaultdict
 
 import distill as d
 import normalize as n
-from storage import origin
+from storage import batches, origin
+
+# How many stored observations to fetch per Chroma round trip. Full HTTP is still
+# never all-resident: at most this many items are held at once, which keeps the
+# streaming memory profile while collapsing one round trip per observation.
+LOAD_BATCH = 32
 
 FEATURE_VERSION = 'features-v2'
 IDENTIFIER_VERSION = 'identifiers-v2'
@@ -37,7 +42,7 @@ def identifier_pairs(item):
     return pairs
 
 
-def annotate_features(records, load_item, config):
+def annotate_features(records, load_many, config):
     """Only compact feature records remain resident across global passes."""
     cookies, login_fps = defaultdict(set), defaultdict(set)
     custom = set(config['auth_cookies'])
@@ -48,26 +53,28 @@ def annotate_features(records, load_item, config):
             login_fps[origin(a)].add(a['_login_fp'])
     n.pass_b_spa(records)
     boilerplate = n.pass_c_boilerplate(records)
-    for a in records:
-        # Refresh request credential inference with the actual request, scoped to origin.
-        item = load_item(a['exchange_id'])
-        a['req_features'] = d.request_features(a['method'], a['url'],
-            item.get('request', {}).get('headers', {}), a['param_names'],
-            custom | cookies[origin(a)])
-        response = item.get('response', {})
-        a['_resp_body'] = (response.get('analysis_body', '') if response.get('body_kind') == 'text'
-                           else response.get('body', ''))
-        a['_resp_headers'] = response.get('headers', {})
-        a['_req_origin'] = d.header_get(item.get('request', {}).get('headers', {}), 'origin')
-        a['access_class'] = n._access_class(a, login_fps[origin(a)])
-        credential = a['req_features']['credential_present']
-        a['anon_data_served'] = not credential and a['access_class'] == 'data'
-        a['soft_denied'] = not credential and a['status_code'] < 400 and a['access_class'] in ('auth_wall', 'shell')
-        n.pass_d_distill([a], boilerplate)
-        a['raw'] = ''  # Hydrated only when emitting a canonical/variant batch.
-        a['identifiers'] = []  # Exact occurrences have their own incremental index.
-        for key in ('_login_fp', '_login_page', '_base_access', '_detected_cookies', '_cookie_names'):
-            a.pop(key, None)
+    for group in batches(records, LOAD_BATCH):
+        items = load_many([a['exchange_id'] for a in group])
+        for a in group:
+            # Refresh request credential inference with the actual request, scoped to origin.
+            item = items.get(a['exchange_id'], {})
+            a['req_features'] = d.request_features(a['method'], a['url'],
+                item.get('request', {}).get('headers', {}), a['param_names'],
+                custom | cookies[origin(a)])
+            response = item.get('response', {})
+            a['_resp_body'] = (response.get('analysis_body', '') if response.get('body_kind') == 'text'
+                               else response.get('body', ''))
+            a['_resp_headers'] = response.get('headers', {})
+            a['_req_origin'] = d.header_get(item.get('request', {}).get('headers', {}), 'origin')
+            a['access_class'] = n._access_class(a, login_fps[origin(a)])
+            credential = a['req_features']['credential_present']
+            a['anon_data_served'] = not credential and a['access_class'] == 'data'
+            a['soft_denied'] = not credential and a['status_code'] < 400 and a['access_class'] in ('auth_wall', 'shell')
+            n.pass_d_distill([a], boilerplate)
+            a['raw'] = ''  # Hydrated only when emitting a canonical/variant batch.
+            a['identifiers'] = []  # Exact occurrences have their own incremental index.
+            for key in ('_login_fp', '_login_page', '_base_access', '_detected_cookies', '_cookie_names'):
+                a.pop(key, None)
     groups = defaultdict(list)
     for a in records:
         groups[(origin(a), a['method'], a['endpoint_template'])].append(a)
@@ -92,11 +99,23 @@ def annotate_features(records, load_item, config):
     return records, n.build_auth_models(records)
 
 
-def hydrate_chunks(chunks, load_item):
-    """Attach bounded HTTP only for records which actually display evidence."""
-    for chunk in chunks:
-        meta = chunk['metadata']
-        if meta.get('granularity') in ('parent', 'variant') and meta.get('exchange_id'):
-            raw = n.reconstruct_raw(load_item(meta['exchange_id']))
-            chunk['page_content'] = raw + chunk['page_content']
-        yield chunk
+def _needs_raw(meta):
+    return meta.get('granularity') in ('parent', 'variant') and bool(meta.get('exchange_id'))
+
+
+def hydrate_chunks(chunks, load_many):
+    """Attach bounded HTTP only for records which actually display evidence.
+
+    Chunks are buffered so one Chroma round trip serves a whole batch rather than
+    one per evidence-bearing chunk.
+    """
+    for group in batches(chunks, LOAD_BATCH):
+        items = load_many([c['metadata']['exchange_id'] for c in group
+                           if _needs_raw(c['metadata'])])
+        for chunk in group:
+            meta = chunk['metadata']
+            if _needs_raw(meta):
+                item = items.get(meta['exchange_id'])
+                if item is not None:
+                    chunk['page_content'] = n.reconstruct_raw(item) + chunk['page_content']
+            yield chunk

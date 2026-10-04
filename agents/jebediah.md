@@ -25,11 +25,11 @@ The `jeb` plugin exposes the capture through three tools:
 
 Each tool runs against the current project directory, so work from the
 engagement project (or pass `db_path` / `project_dir`). Every `jeb_query` response
-includes a `next` list — the real follow-up steps with ids already filled in,
-printed in legacy `jeb-query.sh <command> <args>` shorthand. Read them as *which
-subcommand and which ids* and issue the matching `jeb_query` call (e.g.
-`jeb-query.sh get 123` → `jeb_query command=get target=123`). Prefer those over
-composing your own next call — they reflect what the tool actually found.
+includes a `next` list of follow-up calls in tool shorthand, e.g.
+`jeb query command=get target=abc123` → call `jeb_query` with
+`command=get target=abc123`. Prefer those over composing your own next call: they
+reflect what the tool actually found. Most arrive with real ids filled in; a few
+are templates carrying a `<placeholder>` you supply (`target=<id value>`).
 
 ## Scope
 

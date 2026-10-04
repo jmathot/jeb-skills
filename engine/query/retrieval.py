@@ -31,6 +31,7 @@ def search(agent, query, n_results=8, where=None, where_document=None,
         max_distance = float(max_distance)
     diagnostics = {'candidates': 0, 'eligible_after_filter': 0,
                    'dropped_by_distance': 0, 'dropped_by_diversity': 0}
+    # Cheap local count, and it avoids an Ollama round trip on an empty project.
     if not agent.collection.count():
         return {'results': [], 'fallback': [], 'diagnostics': diagnostics}
     vector = embed_query(agent.ollama_ef, agent.collection_name, query)

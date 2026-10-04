@@ -84,8 +84,12 @@ def sync_identifiers(client, source_collection, records, replace=False):
     """Stream occurrences and reconcile only the supplied source documents.
 
     New rows are written before stale rows are deleted; retries are idempotent.
+    `replace=False` skips the per-document reconciliation scan, which is only
+    needed when a document may already have identifier rows (a re-import or a
+    changed extraction version) -- never for freshly created source documents.
     """
     collection = lookup_collection(client, 'identifiers')
+    pending = []
     for record in records:
         desired = []
         for field, value in sorted(set(map(tuple, record.get('identifier_pairs', [])))):
@@ -95,13 +99,18 @@ def sync_identifiers(client, source_collection, records, replace=False):
                 meta['capture_id'] = record['capture_id']
             desired.append({'id': digest(meta), 'metadata': meta,
                             'document': f'{field}: {value}'})
+        if not replace:
+            # Accumulate across records so one upsert covers the whole batch.
+            pending.extend(desired)
+            continue
         put_records(collection, desired)
-        if replace:
-            wanted = {r['id'] for r in desired}
-            stale = [r['id'] for r in scan(collection, include=(), where={'$and': [
-                {'source_collection': source_collection}, {'doc_id': record['id']}]})
-                     if r['id'] not in wanted]
-            delete_ids(collection, stale)
+        wanted = {r['id'] for r in desired}
+        stale = [r['id'] for r in scan(collection, include=(), where={'$and': [
+            {'source_collection': source_collection}, {'doc_id': record['id']}]})
+                 if r['id'] not in wanted]
+        delete_ids(collection, stale)
+    if pending:
+        put_records(collection, pending)
 
 
 def update_project(captures, **fields):

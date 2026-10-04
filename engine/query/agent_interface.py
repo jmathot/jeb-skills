@@ -13,10 +13,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.normpath(os.path.join(HERE, '../import')))
 from embedding import EMBEDDING_PROFILE_METADATA, embed_documents, make_ollama_ef, embedding_profile
 import distill as d
-from storage import (LOOKUP_COLLECTIONS, scan, sync_identifiers,
+from storage import (LOOKUP_COLLECTIONS, batches, scan, sync_identifiers,
                      writer_lock, digest)
 from findings import finding_document, parse_finding, pairs_for_finding
 import retrieval
+import hints
 
 # Preserve the structural-query guidance without adding another retrieval engine.
 VULN_ALIASES = ('sql injection', 'sql-injection', 'sqli', 'nosql injection',
@@ -96,7 +97,7 @@ class JebAgent:
         if any((collection.metadata or {}).get(k) != v
                for k, v in EMBEDDING_PROFILE_METADATA.items()):
             raise ValueError(f"Collection '{collection.name}' needs a rebuild. "
-                             'Run process_burp.sh rebuild [project_dir]; '
+                             'Run jeb_import with command=rebuild; '
                              'retain all original captures and the database.')
         self.ollama_ef.expected_digest = (collection.metadata or {}).get('embedding_model_digest', '')
 
@@ -240,16 +241,28 @@ class JebAgent:
                    ('ready', 'complete', 'indexing')} if captures is not None else set()
         col = self.sibling('exchanges')
         rows = []
-        include = ('metadatas', 'documents') if contains else ('metadatas',)
         kwargs = {'where': where} if where else {}
         if col is not None:
-            for row in scan(col, include=include, page_size=20, **kwargs):
-                meta = row['metadatas']
-                if meta.get('capture_id') not in allowed or not all(p(meta) for p in (post or [])):
-                    continue
-                if contains and contains not in reconstruct_raw(json.loads(row['documents']), full=True):
-                    continue
-                rows.append((row['id'], meta))
+            # Two phases: filter on metadata first, then fetch full HTTP only for
+            # the survivors. Fetching documents during the scan would transfer and
+            # parse every observation's body, including ones dropped immediately
+            # below. Chroma's where_document is not usable as a prefilter here --
+            # the stored document is JSON-escaped with base64 bodies, so a needle
+            # present in the decoded text can be absent from it.
+            eligible = [(row['id'], row['metadatas'])
+                        for row in scan(col, include=('metadatas',), page_size=500, **kwargs)
+                        if row['metadatas'].get('capture_id') in allowed
+                        and all(p(row['metadatas']) for p in (post or []))]
+            if not contains:
+                rows = eligible
+            else:
+                for group in batches(eligible, 20):
+                    got = col.get(ids=[i for i, _ in group], include=['documents'])
+                    documents = dict(zip(got['ids'], got['documents']))
+                    for record_id, meta in group:
+                        document = documents.get(record_id)
+                        if document and contains in reconstruct_raw(json.loads(document), full=True):
+                            rows.append((record_id, meta))
         rows.sort(key=lambda r: (r[1].get('capture_id', ''), r[1].get('source_item', 0), r[0]))
         results = [self._summarize(i, m) for i, m in rows[offset:offset + limit]]
         return {'results': results, 'total': len(rows), 'offset': offset,
@@ -409,7 +422,7 @@ def execute(args):
     if command in ('get', 'similar'):
         collection = getattr(args, 'collection', None) or resolve_collection(args.db_path, args.target)
         if collection is None:
-            return envelope(command, results=[], notes=['ID not found.'], next=['jeb-query.sh map'])
+            return envelope(command, results=[], notes=['ID not found.'], next=[hints.query('map')])
     if command == 'identifier':
         collection = 'identifiers'
     if command == 'evidence':
@@ -423,9 +436,11 @@ def execute(args):
     if command == 'get':
         doc = agent.get_full(args.target, original=args.original)
         return envelope(command, collection=collection, count=int(doc is not None), document=doc,
-                        next=([f'jeb-query.sh evidence {args.target}', f'jeb-query.sh similar {args.target}']
+                        next=([hints.query('evidence', target=args.target),
+                               hints.query('similar', target=args.target)]
                               if collection == 'behavior' else
-                              [f'jeb-query.sh similar {args.target}'] if collection in COLLECTIONS else []))
+                              [hints.query('similar', target=args.target)]
+                              if collection in COLLECTIONS else []))
     if command == 'identifier':
         hits = agent.find_by_identifier(args.target)
         offset, limit = args.offset, args.limit or 50
@@ -438,7 +453,7 @@ def execute(args):
             field = 'anon_matches_auth' if args.signal == 'content' else 'anon_schema_matches_credentialed'
             where = {'$and': [where, {field: True}]}
         found = agent.source_evidence(where=where, offset=args.offset, limit=args.limit)
-        return envelope(command, **found, next=[f"jeb-query.sh get {r['id']}" for r in found['results'][:3]])
+        return envelope(command, **found, next=[hints.query('get', target=r['id']) for r in found['results'][:3]])
     if command == 'record-attack':
         def read_text(value, path):
             if path:
@@ -447,7 +462,7 @@ def execute(args):
             return value or ''
         recorded = agent.record_attack(vars(args), read_text(args.request, args.request_file),
                                         read_text(args.response, args.response_file))
-        return envelope(command, count=1, **recorded, next=[f"jeb-query.sh get {recorded['recorded']}"])
+        return envelope(command, count=1, **recorded, next=[hints.query('get', target=recorded['recorded'])])
     where, post = build_where(args, collection), post_filters(args, collection)
     if collection == 'exchanges' and command == 'search':
         if args.text:
@@ -467,7 +482,7 @@ def execute(args):
             return envelope(command, results=[], query='', query_original=text,
                             rejected_terms=rejected, screening_action='removed-all',
                             notes=['Search protocol signals or query recorded attacks by vulnerability class.'],
-                            next=['jeb-query.sh map', 'jeb-query.sh attacks'])
+                            next=[hints.query('map'), hints.query('attacks')])
         found = agent.search(residue, where=where, post=post,
                              where_document={'$contains': args.contains} if args.contains else None,
                              max_distance=None if args.loose else 'default',
@@ -485,7 +500,7 @@ def execute(args):
                              offset=getattr(args, 'offset', 0),
                              where_document={'$contains': args.contains} if getattr(args, 'contains', None) else None)
     return envelope(command, collection=collection, **found,
-                    next=[f"jeb-query.sh get {r['id']}" for r in found['results'][:3]])
+                    next=[hints.query('get', target=r['id']) for r in found['results'][:3]])
 
 
 def build_parser():

@@ -308,7 +308,11 @@ def _access_class(a, login_fps):
             return 'static'
         return 'data' if 200 <= sc < 300 else 'other'
     if rc == 'html_document':
-        fp = d.page_fingerprint(body)
+        # extract_features already fingerprinted this body and persisted it as
+        # _login_fp, so reuse it rather than re-parsing the page here.
+        fp = a.get('_login_fp')
+        if fp is None:
+            fp = d.page_fingerprint(body)
         if (fp and fp in login_fps) or d.html_login_signals(body)['is_login']:
             return 'auth_wall'
         return 'data' if 200 <= sc < 300 else 'other'

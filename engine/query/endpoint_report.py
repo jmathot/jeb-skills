@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 import distill as d
 from storage import origin
+import hints
 
 SYNTHETIC_TEMPLATES = {'{auth-model}', '{entity}', '{spa-shell}'}
 PLACEHOLDER_RE = re.compile(r'^\{[^}]*\}$')
@@ -194,7 +195,7 @@ def truncate_raw(document, budget, meta):
     dropped = req_dropped + resp_dropped
     if dropped:
         text += (f"\n\n... [truncated {dropped} of {total} chars "
-                 f"-- full document: jeb-query.sh get {meta.get('_id', '<id>')}]")
+                 f"-- full document: {hints.query('get', target=meta.get('_id', '<id>'))}]")
     return {'text': text, 'truncated': bool(dropped or req_headers or resp_headers),
             'body_chars_omitted': dropped, 'header_lines_omitted': req_headers + resp_headers,
             'chars_shown': len(text), 'chars_total': total,
@@ -283,7 +284,7 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
     hosts = sorted({m['origin'] for m in matches})
     if len(hosts) > 1:
         notes.append(f"{len(hosts)} origins serve this path: {', '.join(hosts)}. "
-                     f"Pass --host to narrow.")
+                     f"Pass host= to narrow.")
 
     if budget['page_content']:
         docs = agent.get_many([m['id'] for m in matches], include=('documents',))
@@ -345,7 +346,7 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
                 report['raw_example'] = _raw_example(agent, metas, raw_budget)
         elif example_ids:
             notes.append("This route's example behavior ids are not present in the "
-                         "behavior collection; re-run jeb-import.")
+                         "behavior collection; re-run jeb_import.")
 
     report['notes'] = notes
     report['next'] = _next_steps(report, target)
@@ -453,13 +454,13 @@ def _next_steps(report, target):
     steps = []
     raw = report.get('raw_example')
     if raw:
-        steps.append(f"jeb-query.sh get {raw.get('exchange_id') or raw['id']}  -- evidence")
+        steps.append(hints.query('get', target=raw.get('exchange_id') or raw['id']))
     elif report.get('examples'):
-        steps.append(f"jeb-query.sh get {report['examples'][0]['id']}")
+        steps.append(hints.query('get', target=report['examples'][0]['id']))
     if report.get('related_by_entity'):
-        steps.append("jeb-query.sh identifier <id value>  -- inspect identifier evidence")
-    steps.append(f"jeb-query.sh search --in behavior --path {target['path']}")
-    steps.append(f"jeb-query.sh attacks --path {target['path']}  -- findings recorded here")
+        steps.append(hints.query('identifier', target='<id value>'))
+    steps.append(hints.query('search', collection='behavior', path=target['path']))
+    steps.append(hints.query('attacks', path=target['path']))
     return steps
 
 
@@ -493,5 +494,5 @@ def _empty_report(agent, target, host, notes):
                       'template': target['template'], 'host': host},
             'count': 0, 'matches': [], 'did_you_mean': suggestions,
             'notes': notes,
-            'next': (["jeb-query.sh endpoint <one of did_you_mean>"] if suggestions
-                     else []) + ["jeb-query.sh map  -- list every observed route"]}
+            'next': ([hints.query('endpoint', target='<one of did_you_mean>')] if suggestions
+                     else []) + [hints.query('map')]}

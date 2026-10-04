@@ -105,6 +105,10 @@ def ingest(client, captures, xml_file, config):
         if meta.get('state') in ('ready', 'complete', 'indexing') and meta.get('parser_version') == PARSER_VERSION:
             print('Capture already retained; rebuilding only when analysis/index versions changed.')
             return capture_id
+    # A capture with no prior record cannot have pre-existing exchange or identifier
+    # rows (exchange ids derive from this capture's content digest), so the
+    # reconciliation work below is only needed for a re-import.
+    fresh = not previous['ids']
     meta = {'state': 'parsing', 'source': str(Path(xml_file).resolve()), 'parser_version': PARSER_VERSION}
     document = previous['documents'][0] if previous['ids'] else json.dumps(config)
     def save():
@@ -135,14 +139,16 @@ def ingest(client, captures, xml_file, config):
                 count += 1
             put_records(exchanges, records)
             sync_identifiers(client, 'exchanges', ({'id': r['id'], 'capture_id': capture_id,
-                'identifier_pairs': identifier_pairs(json.loads(r['document']))} for r in records), replace=True)
+                'identifier_pairs': identifier_pairs(json.loads(r['document']))} for r in records),
+                replace=not fresh)
             exchanges.update(ids=[r['id'] for r in records],
                              metadatas=[{'identifier_version': IDENTIFIER_VERSION} for _ in records])
-        # Parser upgrades can change the number of retained records.
-        stale = [r['id'] for r in scan(exchanges, where={'capture_id': capture_id})
-                 if r['metadatas']['source_item'] >= count]
-        sync_identifiers(client, 'exchanges', ({'id': i, 'identifier_pairs': []} for i in stale), replace=True)
-        delete_ids(exchanges, stale)
+        if not fresh:
+            # Parser upgrades can change the number of retained records.
+            stale = [r['id'] for r in scan(exchanges, where={'capture_id': capture_id})
+                     if r['metadatas']['source_item'] >= count]
+            sync_identifiers(client, 'exchanges', ({'id': i, 'identifier_pairs': []} for i in stale), replace=True)
+            delete_ids(exchanges, stale)
         meta.update(state='ready', exchange_count=count, error='')
         save()
         return capture_id
@@ -176,7 +182,15 @@ def rebuild_project(client, captures, config, force=False):
                          if r['metadatas'].get('state') in ('ready', 'complete', 'indexing'))
         if not allowed:
             raise ValueError('No ready captures to rebuild. Import or resume a capture first; existing indexes retained.')
-        load_item = lambda record_id: json.loads(exchanges.get(ids=[record_id], include=['documents'])['documents'][0])
+        def load_many(ids):
+            """Fetch stored observations by id in one round trip."""
+            ids = [i for i in dict.fromkeys(ids) if i]
+            if not ids:
+                return {}
+            got = exchanges.get(ids=ids, include=['documents'])
+            return {i: json.loads(doc) for i, doc in zip(got['ids'], got['documents'])}
+
+        load_item = lambda record_id: load_many([record_id])[record_id]
         compact, seen, aliases = [], {}, {}
         # Raw bodies are never accumulated. Only compact features survive this pass.
         for capture_id in allowed:
@@ -195,7 +209,7 @@ def rebuild_project(client, captures, config, force=False):
                     seen[overlap] = row['id']
                     compact.append(features)
                 aliases[row['id']] = seen[overlap]
-        annotated, models = annotate_features(compact, load_item, config)
+        annotated, models = annotate_features(compact, load_many, config)
         # Derived associations live on exchanges; segments carry bounded facets only.
         by_id = {a['exchange_id']: a for a in annotated}
         for group in batches(aliases.items()):
@@ -228,7 +242,7 @@ def rebuild_project(client, captures, config, force=False):
             yield from build_behavior.build_segments(annotated)
             yield from build_behavior.build_variants(annotated)
         store(semantic_collection(client, 'behavior', ef, True),
-              hydrate_chunks(behavior_chunks(), load_item), ef, reconcile=True)
+              hydrate_chunks(behavior_chunks(), load_many), ef, reconcile=True)
         update_project(captures, index_state='complete', index_version=version, index_error='')
         print(f'Indexed {len(annotated)} distinct observations from {len(allowed)} ready captures.')
     except Exception as exc:

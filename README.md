@@ -84,6 +84,7 @@ Set RAG hyperparameters as plugin `options` in `opencode.json(c)` (see
 | `candidateCeiling` | Upper bound on adaptive candidate expansion. |
 | `depth.{quick,normal,deep}.{candidateK,nResults,maxPerEndpoint,snippetLen,rawChars}` | Retrieval budget presets. |
 | `ollamaTimeoutSeconds` | Embedding request timeout. |
+| `embedBatchDocs` / `embedBatchChars` | Documents and characters per embedding request (default 32 / 48000). Tuning lever only — EmbeddingGemma throughput is per-document, so larger batches gain little. |
 
 **Index-defining — changing any of these requires a rebuild** (`jeb import`
 `command=rebuild`), because they change the recorded embedding profile and the
@@ -178,5 +179,8 @@ engine/.venv/   auto-created on first load
 ## Verification
 
 Runtime and retrieval evaluation are performed in the separate deployment
-environment. `engine/query/selftest.py` describes the previous shell interface and
-is retained as historical source; its assumptions need adapting externally.
+environment, against a real capture.
+
+Every response carries a `next` list of follow-up calls in tool shorthand
+(`jeb query command=get target=<id>`), produced by `engine/query/hints.py` — the
+single formatter for those hints, so they cannot drift from the tool contract.
