@@ -1,0 +1,13 @@
+{
+  "name": "opencode-jebediah",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "J.E.B.E.D.I.A.H. — OpenCode v2 plugin: local Burp Suite capture RAG (import + query) exposed as native jeb_* tools.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.0.22"
+  }
+}

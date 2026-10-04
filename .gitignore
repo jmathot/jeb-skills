@@ -2,9 +2,12 @@
 __pycache__/
 *.py[cod]
 
-# Virtual environment (created per-install inside the skill scripts dir)
+# Engine virtual environment (created on first plugin load)
 venv/
-jeb-import/scripts/venv/
+engine/.venv/
+
+# Node / plugin dependencies
+node_modules/
 
 # Pipeline output / project data
 chroma_db/
@@ -13,3 +16,4 @@ annotated_*.json
 structure_*.json
 behavior_*.json
 vector_space*.html
+site_map*.html

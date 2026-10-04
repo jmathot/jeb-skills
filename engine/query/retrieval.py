@@ -1,7 +1,21 @@
 """Semantic-only retrieval. Cosine distances are not confidence scores."""
+import os
+
 from embedding import embed_query
 
-DEFAULT_MAX_DISTANCE = {'structure': 0.65, 'behavior': 0.70, 'attacks': 0.70}
+
+def _env_float(name, default):
+    value = os.environ.get(name)
+    return float(value) if value not in (None, '') else default
+
+
+# Query-time knobs (safe to tune without a rebuild); the plugin supplies the
+# JEB_* env vars from opencode.json plugin options.
+DEFAULT_MAX_DISTANCE = {
+    'structure': _env_float('JEB_MAX_DISTANCE_STRUCTURE', 0.65),
+    'behavior': _env_float('JEB_MAX_DISTANCE_BEHAVIOR', 0.70),
+    'attacks': _env_float('JEB_MAX_DISTANCE_ATTACKS', 0.70),
+}
 
 
 def search(agent, query, n_results=8, where=None, where_document=None,
@@ -29,7 +43,7 @@ def search(agent, query, n_results=8, where=None, where_document=None,
         kwargs['where'] = where
     if where_document:
         kwargs['where_document'] = where_document
-    ceiling = 1000
+    ceiling = int(os.environ.get('JEB_CANDIDATE_CEILING') or 1000)
     while True:
         found = agent.collection.query(**kwargs)
         hits = []

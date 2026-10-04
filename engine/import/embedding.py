@@ -27,15 +27,18 @@ from chromadb.utils import embedding_functions
 # under an older scheme can be detected (and either handled or rebuilt).
 # This profile uses EmbeddingGemma's optional title slot when a real HTML title
 # is available. Rebuild derived indexes after changes; preserve source observations.
-EMBEDDING_SCHEME = "embeddinggemma-v5-titled-768d"
+# Index-defining knobs. The plugin passes these as JEB_* env vars from opencode.json
+# plugin options; changing any of them changes the recorded embedding profile and
+# requires a project rebuild (the digest/profile check refuses mismatched queries).
+EMBEDDING_SCHEME = os.environ.get("JEB_EMBEDDING_SCHEME") or "embeddinggemma-v5-titled-768d"
 COLLECTION_SCHEMA = "jeb-v6-streaming"
-DISTANCE_METRIC = "cosine"
+DISTANCE_METRIC = os.environ.get("JEB_DISTANCE_METRIC") or "cosine"
 
-OLLAMA_URL = "http://localhost:11434/api/embeddings"
-OLLAMA_MODEL = "embeddinggemma:latest"
+OLLAMA_URL = os.environ.get("JEB_OLLAMA_URL") or "http://localhost:11434/api/embeddings"
+OLLAMA_MODEL = os.environ.get("JEB_EMBEDDING_MODEL") or "embeddinggemma:latest"
 OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("JEB_OLLAMA_TIMEOUT", "3600"))
 OLLAMA_KEEP_ALIVE = os.environ.get("JEB_OLLAMA_KEEP_ALIVE", "30m")
-EMBEDDING_DIMENSIONS = 768
+EMBEDDING_DIMENSIONS = int(os.environ.get("JEB_EMBEDDING_DIMENSIONS") or 768)
 EMBEDDING_CONTEXT_TOKENS = 2048
 EMBEDDING_PROFILE_METADATA = {
     "embedding_scheme": EMBEDDING_SCHEME,

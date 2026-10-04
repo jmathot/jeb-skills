@@ -10,7 +10,7 @@ import uuid
 import chromadb
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.normpath(os.path.join(HERE, '../../jeb-import/scripts')))
+sys.path.insert(0, os.path.normpath(os.path.join(HERE, '../import')))
 from embedding import EMBEDDING_PROFILE_METADATA, embed_documents, make_ollama_ef, embedding_profile
 import distill as d
 from storage import (LOOKUP_COLLECTIONS, scan, sync_identifiers,
@@ -39,11 +39,26 @@ def screen_query(text, collection):
 
 COLLECTIONS = ('structure', 'behavior', 'attacks')
 ADDRESSABLE = COLLECTIONS + ('exchanges',)
-DEPTH = {
+_DEPTH_BASE = {
     'quick': dict(candidate_k=20, n_results=5, max_per_endpoint=1, snippet_len=120, raw_chars=0),
     'normal': dict(candidate_k=40, n_results=8, max_per_endpoint=2, snippet_len=200, raw_chars=2000),
     'deep': dict(candidate_k=120, n_results=25, max_per_endpoint=4, snippet_len=400, raw_chars=8000),
 }
+
+
+def _depth_from_env(name, base):
+    # Query-time depth presets; the plugin supplies JEB_DEPTH_<DEPTH>_<FIELD> env
+    # vars from opencode.json plugin options. Unset fields keep the defaults.
+    prefix = 'JEB_DEPTH_' + name.upper() + '_'
+
+    def pick(field):
+        value = os.environ.get(prefix + field.upper())
+        return int(value) if value not in (None, '') else base[field]
+
+    return {field: pick(field) for field in base}
+
+
+DEPTH = {name: _depth_from_env(name, base) for name, base in _DEPTH_BASE.items()}
 
 
 class MissingCollection(ValueError):
