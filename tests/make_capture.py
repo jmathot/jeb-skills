@@ -313,7 +313,12 @@ def query_set():
          'relevant': {f'GET {o}/api/public/rates': 2, f'GET {o}/api/orders/{{id}}': 1,
                       f'GET {o}/api/products/{{id}}': 1, f'GET {o}/orders': 1,
                       f'GET {o}/tos': 1, f'GET {o}/priv': 1}},
-        {'q': 'html page listing records in a table', 'in': 'structure',
+        # Graded against behavior, not structure: an HTML page's title,
+        # headings, forms and visible text are carried by `resp_distilled`,
+        # which only the behavior documents index. A structure node holds
+        # per-route protocol facts, so it can find this page by path but not by
+        # what the page renders.
+        {'q': 'html page listing records in a table', 'in': 'behavior',
          'relevant': {f'GET {o}/orders': 2, f'GET {o}/dashboard': 2,
                       f'GET {o}/customers': 1, f'GET {o}/invoices': 1,
                       f'GET {o}/products': 1, f'GET {o}/s/{{id}}': 1}},

@@ -12,6 +12,10 @@ databases live in a separate project directory, never in this repo.
 
 - **Semantic discovery:** Ollama EmbeddingGemma vectors, explicit cosine distance,
   protocol-aware route/response/session segments, and canonical-parent results.
+  Response content — JSON field names, and an HTML page's title, headings, form
+  fields and visible text — is carried by `behavior`; `structure` indexes
+  per-route protocol facts only, so a page is found there by route and posture
+  rather than by what it renders.
 - **Exact queries:** Chroma metadata filtering, literal document substring filters,
   and identifier equality lookup. No application-managed SQLite sidecar, FTS5,
   BM25, reciprocal-rank fusion, or lexical index.
@@ -28,8 +32,8 @@ databases live in a separate project directory, never in this repo.
 
 | Collection | Records |
 |---|---|
-| `structure` | Endpoint, auth-model, entity summaries and semantic segments |
-| `behavior` | Canonical behavior summaries, segments, and raw variants |
+| `structure` | Per-route protocol facts, auth-model and entity summaries, and semantic segments — no response body content |
+| `behavior` | Canonical behavior summaries carrying the distilled response body (JSON field names; HTML title, headings, forms, text), segments, and raw variants |
 | `attacks` | Recorded testing events and evidence |
 | `captures` | Source digest, configuration, processing version, import state |
 | `exchanges` | Capture-scoped observations, source item position, full evidence |
@@ -189,7 +193,9 @@ engine/.venv/   auto-created on first load
 is generated, so its ground truth is known without running the engine:
 `tests/make_capture.py` writes both `tests/capture.xml` (296 items, single
 origin) and `tests/ground_truth.json` (routes, entities, identifiers, keyword
-needles, and a graded semantic query set).
+needles, and a graded semantic query set). Each query names the collection it is
+graded against; page-content queries target `behavior`, because that is the
+collection carrying response content.
 
 ```bash
 ./tests/run.sh                    # all tiers against the cached import

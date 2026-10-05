@@ -1256,7 +1256,7 @@
     },
     {
       "q": "html page listing records in a table",
-      "in": "structure",
+      "in": "behavior",
       "relevant": {
         "GET https://app.example:443/orders": 2,
         "GET https://app.example:443/dashboard": 2,
