@@ -42,17 +42,6 @@ def _dominant_schema(items, sig_field, keys_field):
     return sig, keys
 
 
-def _union_identifier_pairs(items):
-    seen, out = set(), []
-    for a in items:
-        for pair in a.get('identifiers', []):
-            pair = tuple(pair)
-            if pair not in seen:
-                seen.add(pair)
-                out.append(pair)
-    return out
-
-
 def build_endpoint_nodes(annotated):
     groups = OrderedDict()
     for a in annotated:
@@ -139,7 +128,6 @@ def build_endpoint_nodes(annotated):
             items, 'resp_schema_sig', 'resp_schema_keys')
         node['req_schema_sig'], node['req_schema_keys'] = _dominant_schema(
             items, 'req_schema_sig', 'req_schema_keys')
-        node['identifier_pairs'] = _union_identifier_pairs(items)
         nodes.append(node)
     return nodes
 
@@ -201,8 +189,7 @@ def endpoint_chunk(node, entity_of=None):
                     f"{node['method']}|{node['endpoint_template']}|{node['node_kind']}")
     return {'id': node_id, 'embed_text': embed_text,
             'embedding_title': node.get('page_title', ''),
-            'page_content': "\n".join(pc), 'metadata': metadata,
-            'identifier_pairs': node.get('identifier_pairs', [])}
+            'page_content': "\n".join(pc), 'metadata': metadata}
 
 
 def auth_model_chunk(origin, model):

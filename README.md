@@ -17,8 +17,10 @@ databases live in a separate project directory, never in this repo.
   per-route protocol facts only, so a page is found there by route and posture
   rather than by what it renders.
 - **Exact queries:** Chroma metadata filtering, literal document substring filters,
-  and identifier equality lookup. No application-managed SQLite sidecar, FTS5,
-  BM25, reciprocal-rank fusion, or lexical index.
+  and identifier equality lookup — the last is Chroma metadata equality over
+  identifier values extracted at ingest, held in the `identifiers` collection.
+  No full-text or lexical index, no FTS5, no BM25, no reciprocal-rank fusion,
+  and no SQLite sidecar outside Chroma's own storage.
 - **Cumulative imports:** captures and source observations remain in Chroma;
   structure and behavior summaries are derived across retained captures.
 - **Evidence:** bounded reconstructed previews for browsing; full decoded text and
@@ -30,18 +32,38 @@ databases live in a separate project directory, never in this repo.
 
 ### Chroma collections
 
+A project database holds six collections: three embedded, three lookup.
+
+**Embedded** — the semantic search targets. EmbeddingGemma vectors, 768
+dimensions, cosine distance:
+
 | Collection | Records |
 |---|---|
 | `structure` | Per-route protocol facts, auth-model and entity summaries, and semantic segments — no response body content |
 | `behavior` | Canonical behavior summaries carrying the distilled response body (JSON field names; HTML title, headings, forms, text), segments, and raw variants |
 | `attacks` | Recorded testing events and evidence |
+
+**Lookup** — exact `get()` and metadata equality only. These use fixed
+one-dimensional vectors and never call Ollama:
+
+| Collection | Records |
+|---|---|
 | `captures` | Source digest, configuration, processing version, import state |
 | `exchanges` | Capture-scoped observations, source item position, full evidence |
 | `identifiers` | Exact value/field/source-document associations |
 
-The three lookup collections use fixed one-dimensional vectors and metadata
-lookups; they never call Ollama. Chroma may use SQLite internally; this
-application only manages Chroma collections and APIs.
+`exchanges` is what makes `command=rebuild` work without the original XML, and
+the `captures` collection's own metadata carries project state (`index_state`,
+`index_version`, analysis config).
+
+`collection=` accepts the three embedded names plus `exchanges` (for `contains`
+over full decoded source HTTP). `captures` and `identifiers` are not search
+targets — reach them with `jeb_import command=status` and
+`jeb_query command=identifier`. `command=status` reports every collection's
+record count under both groups.
+
+Chroma may use SQLite internally; this application only manages Chroma
+collections and APIs.
 
 ## Install
 
@@ -126,7 +148,7 @@ Build or maintain a project's `chroma_db/`. Set `command`:
 |---|---|---|
 | `import` | `xml_file`, `project_dir?`, `auth_cookies?`, `auto_detect?`, `rebuild?` | Streams Burp XML directly into Chroma; omitted options inherit saved project settings. |
 | `rebuild` | `project_dir?` | Rebuild derived indexes from retained observations (no XML). Preserves finding IDs. |
-| `status` | `project_dir?` | Report capture states and index state; run after an error. |
+| `status` | `project_dir?` | Report capture states, index state, and per-collection record counts; run after an error. |
 | `abandon` | `capture_id`, `project_dir?` | Exclude a failed/interrupted capture (evidence retained); rebuild afterward. |
 | `export` | `project_dir?`, `collection`, `output` | Write one collection as NDJSON to a path that must not exist. |
 

@@ -13,11 +13,15 @@ import build_structure
 import distill as d
 from embedding import embedding_profile, make_ollama_ef
 from parse import iter_items
-from storage import (batches, digest, lookup_collection, put_records, scan, delete_ids,
-                     sync_identifiers, writer_lock, update_project)
+from storage import (LOOKUP_COLLECTIONS, batches, digest, lookup_collection, put_records,
+                     scan, delete_ids, sync_identifiers, writer_lock, update_project)
 from streaming import (FEATURE_VERSION, IDENTIFIER_VERSION, PARSER_VERSION,
                        extract_features, identifier_pairs, annotate_features, hydrate_chunks)
 from vector_store import semantic_collection, store
+
+# The embedded collections, mirroring COLLECTIONS in engine/query/agent_interface.py;
+# the other three are storage.LOOKUP_COLLECTIONS and are never embedded.
+EMBEDDED_COLLECTIONS = ('structure', 'behavior', 'attacks')
 
 
 def source_digest(path):
@@ -26,6 +30,20 @@ def source_digest(path):
         for block in iter(lambda: handle.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def collection_counts(client):
+    """Record counts per collection, split the way the database is built.
+
+    A project holds six collections and only the embedded three are search
+    targets; `status` reports the split so that is visible without reading the
+    source. Absent names are omitted -- a project mid-import has fewer.
+    """
+    present = {c.name for c in client.list_collections()}
+    groups = {'embedded': EMBEDDED_COLLECTIONS, 'lookup': LOOKUP_COLLECTIONS}
+    return {group: {name: client.get_collection(name, embedding_function=None).count()
+                    for name in names if name in present}
+            for group, names in groups.items()}
 
 
 def project_config(captures, auth_cookies=None, auto_detect=None):
@@ -273,7 +291,7 @@ def main():
             p.set_defaults(auto_detect=None)
             p.add_argument('--rebuild', action='store_true', help='force derived index rebuild')
         if command == 'export':
-            p.add_argument('--collection', choices=('structure', 'behavior', 'attacks', 'captures', 'exchanges'), required=True)
+            p.add_argument('--collection', choices=EMBEDDED_COLLECTIONS + LOOKUP_COLLECTIONS, required=True)
             p.add_argument('--output', required=True, help='explicit NDJSON destination; must not exist')
     args = parser.parse_args(argv)
     db_path = str(Path(args.project_dir).resolve() / 'chroma_db')
@@ -283,7 +301,9 @@ def main():
         client = chromadb.PersistentClient(path=db_path)
         captures = lookup_collection(client, 'captures')
         if args.command == 'status':
-            print(json.dumps({'project': captures.metadata, 'captures': list(scan(captures))}, indent=2))
+            print(json.dumps({'project': captures.metadata,
+                              'collections': collection_counts(client),
+                              'captures': list(scan(captures))}, indent=2))
             return
         if args.command == 'export':
             col = client.get_collection(args.collection, embedding_function=None)

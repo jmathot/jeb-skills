@@ -209,7 +209,7 @@ export async function registerTools(
           auth_cookies: strArr("Additional recognized credential cookie names (import). Replaces custom names for the whole corpus."),
           auto_detect: bool("Enable/disable origin-scoped login-cookie learning (import). Omit to inherit the saved setting."),
           rebuild: bool("Force derived index rebuild during import even if versions match."),
-          collection: enumStr(["structure", "behavior", "attacks", "captures", "exchanges"], "Collection to export (export command)."),
+          collection: enumStr(["structure", "behavior", "attacks", "captures", "exchanges", "identifiers"], "Collection to export (export command)."),
           output: str("NDJSON destination path; must not already exist (export command)."),
         },
       },

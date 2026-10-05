@@ -19,21 +19,6 @@ def _csv(v):
     return ",".join(v) if isinstance(v, (list, tuple)) else (v or "")
 
 
-def _union_identifier_pairs(items):
-    """Union of identifier (field, value) pairs across every collapsed instance,
-    not just the representative -- this is how instance-level identifier values
-    from collapsed duplicates stay searchable even though only one raw
-    request/response is kept as page_content."""
-    seen, out = set(), []
-    for a in items:
-        for pair in a.get('identifiers', []):
-            pair = tuple(pair)
-            if pair not in seen:
-                seen.add(pair)
-                out.append(pair)
-    return out
-
-
 def _representative(items):
     """Choose the most analyzable and information-rich exchange."""
     return min(items, key=lambda i: (
@@ -136,8 +121,7 @@ def build(annotated):
         }
         chunks.append({'id': d.behavior_id(rep), 'embed_text': embed_text,
                        'embedding_title': rep.get('page_title', ''),
-                       'page_content': page_content, 'metadata': metadata,
-                       'identifier_pairs': _union_identifier_pairs(items)})
+                       'page_content': page_content, 'metadata': metadata})
     return chunks
 
 
@@ -210,7 +194,6 @@ def build_variants(annotated):
                 'embedding_title': rep.get('page_title', ''),
                 'page_content': rep['raw'],
                 'metadata': metadata,
-                'identifier_pairs': _union_identifier_pairs(variant_items),
             })
     return chunks
 
