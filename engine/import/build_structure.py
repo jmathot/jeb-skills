@@ -58,6 +58,7 @@ def build_endpoint_nodes(annotated):
         cors = ''
         page_title = ''
         example_ids = []
+        graphql_operations, tech = [], []
         for a in items:
             param_names.update(a['param_names'])
             if a['resp_content_type']:
@@ -80,6 +81,11 @@ def build_endpoint_nodes(annotated):
                 cookies_set.add(_cookie_name(entry))
             cookies_sent.update(reqf['cookie_names'])
             sec_missing.update(respf['security_headers_missing'])
+            if a.get('graphql_operation') and a['graphql_operation'] not in graphql_operations:
+                graphql_operations.append(a['graphql_operation'])
+            for fact in respf.get('tech', []):
+                if fact not in tech:
+                    tech.append(fact)
             if CORS_RANK.get(respf['cors'], 0) > CORS_RANK.get(cors, 0):
                 cors = respf['cors']
             if a['is_static']:
@@ -119,6 +125,8 @@ def build_endpoint_nodes(annotated):
             'security_headers_missing': sorted(sec_missing),
             'cors': cors,
             'is_static': is_static,
+            'graphql_operations': graphql_operations[:24],
+            'tech': sorted(tech)[:d.TECH_CAP],
             'page_title': page_title,
             'path_depth': items[0]['path_depth'],
             'instance_count': len(items),
@@ -177,6 +185,7 @@ def endpoint_chunk(node, entity_of=None):
         'cookies_set': _csv(node['cookies_set']),
         'security_headers_missing': _csv(node['security_headers_missing']),
         'cors': node['cors'],
+        'tech': _csv(node.get('tech', [])),
         'is_static': node['is_static'],
         'instance_count': node['instance_count'],
         'path_depth': node['path_depth'],

@@ -12,10 +12,10 @@ import build_behavior
 import build_structure
 import distill as d
 from embedding import embedding_profile, make_ollama_ef
-from parse import iter_items
+from parse import hydrate_item, iter_items, storable
 from storage import (LOOKUP_COLLECTIONS, batches, digest, lookup_collection, put_records,
                      scan, delete_ids, sync_identifiers, writer_lock, update_project)
-from streaming import (FEATURE_VERSION, IDENTIFIER_VERSION, PARSER_VERSION,
+from streaming import (FEATURE_VERSION, IDENTIFIER_VERSION, LOAD_BATCH, PARSER_VERSION,
                        extract_features, identifier_pairs, annotate_features, hydrate_chunks)
 from vector_store import semantic_collection, store
 
@@ -136,7 +136,7 @@ def ingest(client, captures, xml_file, config):
     count, occurrences = 0, Counter()
     try:
         for group in batches(iter_items(xml_file), 20):
-            records = []
+            records, pairs = [], []
             for item in group:
                 p = urlparse(item['url'])
                 if not p.scheme or not p.hostname or not item['method']:
@@ -153,14 +153,13 @@ def ingest(client, captures, xml_file, config):
                     'host': p.hostname, 'scheme': p.scheme, 'port': p.port or (443 if p.scheme == 'https' else 80),
                     'method': item['method'].upper(), 'url': item['url'], 'time': item.get('time', ''),
                     'feature_version': FEATURE_VERSION, '_features': json.dumps(features),
-                    'identifier_version': ''}, 'document': json.dumps(item)})
+                    'identifier_version': IDENTIFIER_VERSION}, 'document': json.dumps(storable(item))})
+                pairs.append(identifier_pairs(item))
                 count += 1
             put_records(exchanges, records)
             sync_identifiers(client, 'exchanges', ({'id': r['id'], 'capture_id': capture_id,
-                'identifier_pairs': identifier_pairs(json.loads(r['document']))} for r in records),
+                'identifier_pairs': pr} for r, pr in zip(records, pairs)),
                 replace=not fresh)
-            exchanges.update(ids=[r['id'] for r in records],
-                             metadatas=[{'identifier_version': IDENTIFIER_VERSION} for _ in records])
         if not fresh:
             # Parser upgrades can change the number of retained records.
             stale = [r['id'] for r in scan(exchanges, where={'capture_id': capture_id})
@@ -174,6 +173,25 @@ def ingest(client, captures, xml_file, config):
         meta.update(state='failed', error=str(exc), exchange_count=count)
         save()
         raise
+
+
+def loss_ledger(annotated):
+    """Counts of what the derived indexes dropped or merged, for `status` and the
+    import summary. Cap-driven counters come from distill.LEDGER; the rest are
+    read straight off the annotated observations."""
+    ledger = d.ledger_snapshot()
+    raw_routes = {(a['scheme'], a['host'], a['port'], a['endpoint']) for a in annotated}
+    templates = {(a['scheme'], a['host'], a['port'], a['endpoint_template']) for a in annotated}
+    ledger.update({
+        'observations': len(annotated),
+        'routes_raw': len(raw_routes),
+        'routes_after_templating': len(templates),
+        'routes_merged_by_templating': len(raw_routes) - len(templates),
+        'response_bodies_truncated_in_preview': sum(1 for a in annotated if a.get('resp_body_truncated')),
+        'request_bodies_truncated_in_preview': sum(1 for a in annotated if a.get('req_body_truncated')),
+        'responses_undecodable': sum(1 for a in annotated if a.get('resp_decode_error')),
+    })
+    return dict(sorted(ledger.items()))
 
 
 def rebuild_project(client, captures, config, force=False):
@@ -195,6 +213,7 @@ def rebuild_project(client, captures, config, force=False):
         repair_identifiers(client)
         return
     update_project(captures, index_state='building', index_error='')
+    d.ledger_reset()
     try:
         allowed = sorted(r['id'] for r in scan(captures)
                          if r['metadatas'].get('state') in ('ready', 'complete', 'indexing'))
@@ -206,27 +225,51 @@ def rebuild_project(client, captures, config, force=False):
             if not ids:
                 return {}
             got = exchanges.get(ids=ids, include=['documents'])
-            return {i: json.loads(doc) for i, doc in zip(got['ids'], got['documents'])}
+            return {i: hydrate_item(json.loads(doc)) for i, doc in zip(got['ids'], got['documents'])}
 
-        load_item = lambda record_id: load_many([record_id])[record_id]
-        compact, seen, aliases = [], {}, {}
-        # Raw bodies are never accumulated. Only compact features survive this pass.
-        for capture_id in allowed:
-            for row in scan(exchanges, where={'capture_id': capture_id}, page_size=100):
+        def resolve_features(rows, capture_id):
+            """Compact features for a page of scanned rows.
+
+            Rows whose features or identifiers predate the current versions are
+            repaired together: one document fetch, one identifier sync and one
+            metadata update per group instead of one of each per row.
+            """
+            resolved, stale = {}, []
+            for row in rows:
                 meta = row['metadatas']
                 features = json.loads(meta['_features']) if meta.get('feature_version') == FEATURE_VERSION else None
                 if features is None or identifiers_missing or meta.get('identifier_version') != IDENTIFIER_VERSION:
-                    item = load_item(row['id'])
+                    stale.append((row['id'], features))
+                else:
+                    resolved[row['id']] = features
+            for group in batches(stale, LOAD_BATCH):
+                items = load_many([record_id for record_id, _ in group])
+                sync, updates = [], []
+                for record_id, features in group:
+                    item = items[record_id]
                     features = features or extract_features(item)
-                    sync_identifiers(client, 'exchanges', [{'id': row['id'], 'capture_id': capture_id,
-                                      'identifier_pairs': identifier_pairs(item)}], replace=True)
-                    exchanges.update(ids=[row['id']], metadatas=[{'_features': json.dumps(features),
-                        'feature_version': FEATURE_VERSION, 'identifier_version': IDENTIFIER_VERSION}])
-                overlap = meta.get('overlap_key', row['id'])
-                if overlap not in seen:
-                    seen[overlap] = row['id']
-                    compact.append(features)
-                aliases[row['id']] = seen[overlap]
+                    resolved[record_id] = features
+                    sync.append({'id': record_id, 'capture_id': capture_id,
+                                 'identifier_pairs': identifier_pairs(item)})
+                    updates.append({'_features': json.dumps(features),
+                                    'feature_version': FEATURE_VERSION,
+                                    'identifier_version': IDENTIFIER_VERSION})
+                sync_identifiers(client, 'exchanges', sync, replace=True)
+                exchanges.update(ids=[record_id for record_id, _ in group], metadatas=updates)
+            return resolved
+
+        compact, seen, aliases = [], {}, {}
+        # Raw bodies are never accumulated. Only compact features survive this pass.
+        for capture_id in allowed:
+            for page in batches(scan(exchanges, where={'capture_id': capture_id}, page_size=100), 100):
+                features_by_id = resolve_features(page, capture_id)
+                for row in page:
+                    features = features_by_id[row['id']]
+                    overlap = row['metadatas'].get('overlap_key', row['id'])
+                    if overlap not in seen:
+                        seen[overlap] = row['id']
+                        compact.append(features)
+                    aliases[row['id']] = seen[overlap]
         annotated, models = annotate_features(compact, load_many, config)
         # Derived associations live on exchanges; segments carry bounded facets only.
         by_id = {a['exchange_id']: a for a in annotated}
@@ -256,13 +299,18 @@ def rebuild_project(client, captures, config, force=False):
         store(semantic_collection(client, 'structure', ef, True), structure_chunks(), ef, reconcile=True)
         del nodes, entities, entity_of
         def behavior_chunks():
-            yield from build_behavior.build(annotated)
-            yield from build_behavior.build_segments(annotated)
+            parents = build_behavior.build(annotated)
+            yield from parents
+            yield from build_behavior.build_segments(annotated, parents)
             yield from build_behavior.build_variants(annotated)
         store(semantic_collection(client, 'behavior', ef, True),
               hydrate_chunks(behavior_chunks(), load_many), ef, reconcile=True)
-        update_project(captures, index_state='complete', index_version=version, index_error='')
+        ledger = loss_ledger(annotated)
+        update_project(captures, index_state='complete', index_version=version, index_error='',
+                       loss_ledger=json.dumps(ledger, sort_keys=True))
         print(f'Indexed {len(annotated)} distinct observations from {len(allowed)} ready captures.')
+        print('Loss ledger (what the caps cut; every exchange itself is retained verbatim): '
+              + json.dumps(ledger, sort_keys=True))
     except Exception as exc:
         update_project(captures, index_state='failed', index_error=str(exc))
         raise

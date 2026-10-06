@@ -105,7 +105,7 @@ def instrument(counters):
     counters.count(embedding, 'embed_documents', 'ollama.embed_documents')
     counters.count(vector_store, 'embed_documents', 'ollama.embed_documents')
     counters.count(retrieval, 'embed_query', 'ollama.embed_query')
-    counters.count(distill, '_strip_for_page', 'html.parse')
+    counters.count(distill, 'BeautifulSoup', 'html.parse')
     # import_project binds these at import time, so patch its own references.
     for owner, name in [(import_project, 'annotate_features'),
                         (import_project, 'hydrate_chunks'),

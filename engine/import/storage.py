@@ -89,7 +89,7 @@ def sync_identifiers(client, source_collection, records, replace=False):
     changed extraction version) -- never for freshly created source documents.
     """
     collection = lookup_collection(client, 'identifiers')
-    pending = []
+    pending, wanted, doc_ids = [], set(), []
     for record in records:
         desired = []
         for field, value in sorted(set(map(tuple, record.get('identifier_pairs', [])))):
@@ -99,18 +99,21 @@ def sync_identifiers(client, source_collection, records, replace=False):
                 meta['capture_id'] = record['capture_id']
             desired.append({'id': digest(meta), 'metadata': meta,
                             'document': f'{field}: {value}'})
-        if not replace:
-            # Accumulate across records so one upsert covers the whole batch.
-            pending.extend(desired)
-            continue
-        put_records(collection, desired)
-        wanted = {r['id'] for r in desired}
-        stale = [r['id'] for r in scan(collection, include=(), where={'$and': [
-            {'source_collection': source_collection}, {'doc_id': record['id']}]})
-                 if r['id'] not in wanted]
-        delete_ids(collection, stale)
+        # Accumulate across records so one upsert covers the whole batch.
+        pending.extend(desired)
+        wanted.update(r['id'] for r in desired)
+        doc_ids.append(record['id'])
     if pending:
         put_records(collection, pending)
+    if replace and doc_ids:
+        # One filtered scan per group of documents, not one per document. New rows
+        # are already written, so a retry after a failure here is still idempotent.
+        for start in range(0, len(doc_ids), 100):
+            group = doc_ids[start:start + 100]
+            stale = [r['id'] for r in scan(collection, include=(), where={'$and': [
+                {'source_collection': source_collection}, {'doc_id': {'$in': group}}]})
+                     if r['id'] not in wanted]
+            delete_ids(collection, stale)
 
 
 def update_project(captures, **fields):
