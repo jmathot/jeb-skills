@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 import distill as d
 from parse import parse_http, decode_transfer, decode_content, decode_text, _header
 from storage import scan, sync_identifiers
+from streaming import IDENTIFIER_VERSION
 
 
 def pairs_for_finding(data):
@@ -42,7 +43,10 @@ def repair_identifiers(client, force=False):
         return
     col = client.get_collection('attacks', embedding_function=None)
     for row in scan(col, include=('documents', 'metadatas'), page_size=20):
-        if not force and row['metadatas'].get('identifier_state') in ('complete', 'legacy-unstructured'):
+        meta = row['metadatas']
+        if not force and (meta.get('identifier_state') == 'legacy-unstructured' or (
+                meta.get('identifier_state') == 'complete'
+                and meta.get('identifier_version') == IDENTIFIER_VERSION)):
             continue
         data = parse_finding(row['documents'])
         if data is None:
@@ -51,4 +55,5 @@ def repair_identifiers(client, force=False):
             continue
         sync_identifiers(client, 'attacks', [{'id': row['id'],
                           'identifier_pairs': pairs_for_finding(data)}], replace=True)
-        col.update(ids=[row['id']], metadatas=[{'identifier_state': 'complete'}])
+        col.update(ids=[row['id']], metadatas=[{'identifier_state': 'complete',
+                                                'identifier_version': IDENTIFIER_VERSION}])

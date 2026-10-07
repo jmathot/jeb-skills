@@ -16,6 +16,7 @@ import distill as d
 from storage import (LOOKUP_COLLECTIONS, batches, scan, sync_identifiers,
                      writer_lock, digest)
 from findings import finding_document, parse_finding, pairs_for_finding
+from streaming import IDENTIFIER_VERSION
 import retrieval
 import hints
 
@@ -302,7 +303,8 @@ class JebAgent:
         try:
             sync_identifiers(self.client, 'attacks', [{'id': doc_id,
                               'identifier_pairs': pairs_for_finding(data)}], replace=True)
-            self.collection.update(ids=[doc_id], metadatas=[{'identifier_state': 'complete'}])
+            self.collection.update(ids=[doc_id], metadatas=[{'identifier_state': 'complete',
+                                                              'identifier_version': IDENTIFIER_VERSION}])
             return {'recorded': doc_id, 'summary': meta['summary'], 'identifier_state': 'complete'}
         except Exception as exc:
             return {'recorded': doc_id, 'summary': meta['summary'], 'identifier_state': 'pending',

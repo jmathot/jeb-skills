@@ -233,9 +233,13 @@ def export_and_gate(project, report_dir, update):
             ok = False
             continue
         digest = os.path.join(DIGESTS, f'{name}.digest.json')
+        if not update and not os.path.exists(digest):
+            print(f'  x  {name}: no committed digest baseline; run with --update-baseline')
+            ok = False
+            continue
         gate = os.path.join(TESTS, 'gate.py')
         argv = ([gate, 'digest', '--export', out, '--out', digest]
-                if update or not os.path.exists(digest) else
+                if update else
                 [gate, 'check', '--export', out, '--digest', digest, '--label', name])
         # Captured rather than inherited: the parent buffers its own prints, so
         # inherited output lands in the wrong place whenever stdout is a pipe.

@@ -1484,11 +1484,15 @@ def _fit(parts, cap=EMBED_TEXT_CAP, sep=" | ", floor=80):
 
     while texts and total() > cap:
         i = max(range(len(texts)), key=lambda k: len(texts[k]))
-        target = max(floor, len(texts[i]) - (total() - cap))
-        if target >= len(texts[i]):
+        # _truncate appends "…" (one char), so aim one below the target length.
+        target = max(floor, len(texts[i]) - (total() - cap) - 1)
+        if target >= len(texts[i]) - 1:
             break
         LEDGER['truncated.embed_shrunk'] += 1
+        before = total()
         texts[i] = _truncate(texts[i], target)
+        if total() >= before:   # no progress: never loop on a no-op
+            break
     return _truncate(sep.join(texts), cap, 'embed_text')
 
 

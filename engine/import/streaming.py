@@ -10,8 +10,10 @@ from storage import batches, origin
 # streaming memory profile while collapsing one round trip per observation.
 LOAD_BATCH = 32
 
-FEATURE_VERSION = 'features-v2'
-IDENTIFIER_VERSION = 'identifiers-v2'
+# Bump whenever extract_features / identifier_pairs output can change
+# (distill.py, normalize.py, parse.py).
+FEATURE_VERSION = 'features-v3'
+IDENTIFIER_VERSION = 'identifiers-v3'
 PARSER_VERSION = 'parser-v2'
 
 

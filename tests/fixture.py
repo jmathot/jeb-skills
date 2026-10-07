@@ -31,8 +31,21 @@ def interpreter():
 
 
 def capture_key():
+    """Cache key: the capture plus everything that shapes the imported database.
+
+    Feature extraction is persisted per observation and reused by rebuilds, so an
+    engine change keyed only on the capture would silently test a stale import.
+    """
+    h = hashlib.sha256()
     with open(CAPTURE, 'rb') as handle:
-        return hashlib.sha256(handle.read()).hexdigest()[:16]
+        h.update(handle.read())
+    import_dir = os.path.join(ENGINE, 'import')
+    for name in sorted(os.listdir(import_dir)):
+        if name.endswith('.py'):
+            h.update(name.encode())
+            with open(os.path.join(import_dir, name), 'rb') as handle:
+                h.update(handle.read())
+    return h.hexdigest()[:16]
 
 
 def project_dir():

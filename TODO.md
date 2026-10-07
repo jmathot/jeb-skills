@@ -1,3 +1,35 @@
+# Development plan
+
+Two parts: the **bugfix plan** from the a8432e6 review, then the
+**knowledge-graph ingestion plan** (at the end of this file). Do the bugfix P0
+items and test-suite holes first: the graph work touches the same code.
+
+## Handoff status (2026-10-07)
+
+Work stopped on a machine with neither the engine packages nor Ollama installed,
+so **nothing below has been run**. Items marked **[fixed, untested]** were edited
+but never executed. On the next machine:
+
+1. Set up the environment (see "Verification" at the end of the bugfix plan):
+   `python3 -m venv engine/.venv`,
+   `engine/.venv/bin/pip install -r engine/requirements.txt -r engine/requirements-viz.txt`,
+   `ollama pull embeddinggemma:latest`, and make sure Ollama is serving on :11434.
+2. Check the four fixes that were already made:
+   - P0-1: the `timeout 5` `_fit` check in "Verification" step 1;
+   - P0-2: `FEATURE_VERSION`/`IDENTIFIER_VERSION` are now `-v3`. Findings store
+     `identifier_version`; `repair_identifiers` and `record_attack` write it,
+     and repair treats a version mismatch as stale;
+   - T-1: `tests/fixture.py` keys the cache on the capture plus every
+     `engine/import/*.py`;
+   - T-2: `tests/bench_perf.py` fails on a missing digest baseline unless
+     `--update-baseline` is given.
+3. `./tests/run.sh --fresh`. The version bumps change extracted features, so
+   expect the tier C digests to move. Review the diff, then `--update-baseline`.
+4. Continue with P0-3, then the remaining T items and P1, then the graph plan
+   starting at its Phase 1. (Its Phase 0 is the four items above.)
+
+---
+
 # Bugfix plan
 
 Found in a review of `plugin` @ a8432e6 (2026-10-06). Line numbers refer to that
@@ -12,7 +44,7 @@ change to the ingest path, run `./tests/run.sh --fresh` (see "Verification").
 
 ## P0: fix first
 
-### P0-1. `_fit()` never terminates once embed text is over the cap [verified]
+### P0-1. `_fit()` never terminates once embed text is over the cap [verified] **[fixed, untested]**
 `engine/import/distill.py:1476-1492`
 
 `_truncate(text, n)` returns `text[:n] + "…"`, which is **n+1** characters
@@ -51,7 +83,7 @@ assert len(out) <= d.EMBED_TEXT_CAP + 1                  # +1 for the trailing "
 ```
 Run it under `timeout 5`.
 
-### P0-2. a8432e6 changed extraction without bumping the version constants [verified]
+### P0-2. a8432e6 changed extraction without bumping the version constants [verified] **[fixed, untested]**
 `engine/import/streaming.py:13-15`. `FEATURE_VERSION = 'features-v2'` and
 `IDENTIFIER_VERSION = 'identifiers-v2'` have not changed since 7c4aa10.
 
@@ -156,13 +188,13 @@ description.
 
 ## Test-suite holes (fix before P1 so the fixes are covered)
 
-### T-1. `fixture.py` caches on the capture sha only
+### T-1. `fixture.py` caches on the capture sha only **[fixed, untested]**
 `tests/fixture.py`: engine changes reuse a stale DB unless you pass `--fresh`,
 which would have hidden P0-2. Add `streaming.FEATURE_VERSION`,
 `IDENTIFIER_VERSION`, `PARSER_VERSION` and a hash of `engine/import/*.py` to the
 cache key.
 
-### T-2. A missing digest baseline passes silently [reported]
+### T-2. A missing digest baseline passes silently [reported] **[fixed, untested]**
 `tests/bench_perf.py:258-261`. When `*.digest.json` is missing, the gate writes
 a new one and passes. Change it to: missing baseline and no `--update-baseline`
 → print an error and set `status = 1`.
@@ -401,3 +433,211 @@ Checks:
    envelope) and `command=endpoint method=["GET","POST"]` (expect an error).
 5. Run `jeb_import command=import` on a malformed XML. The tool output should
    include the exit code and the traceback tail.
+
+---
+
+## Knowledge-graph ingestion plan
+
+### Context
+
+The ingestion pipeline (`engine/import/`) turns a Burp capture into two embedded
+Chroma collections, and it fans each route out into many near-duplicate vectors:
+
+- **structure**: per route, 1 parent + 2 segments (`identity`, `posture`); plus auth-model and entity parents, each with a segment that repeats the parent's text (`build_structure.build_segments`).
+- **behavior**: per (route × status × auth role × access class × credential), 1 parent + 3 segments (`route`, `response`, `security`) + up to 12 embedded variants (`build_behavior.build/build_segments/build_variants`).
+- The same facts are embedded many times. Route words, params and the security clause appear in the structure parent, the structure segments, the behavior parent, the behavior `route` segment and every variant.
+- The fixture's 296 exchanges produce **717 embedded records** (279 structure + 438 behavior). Embedding is about 29 of the 34 s import (`tests/baseline/perf.json`).
+- Long pages are not split. They are **cut**: `html_page_summary` keeps a lead of at most 600 chars inside a 1500-char `EMBED_TEXT_CAP`. Most of a long page never reaches the index, even though EmbeddingGemma accepts 2048 tokens.
+- Relationships already exist, but only as CSV strings in metadata (`entity_ids`, `example_ids`, `variant_ids`, `produced_by`) or are rebuilt on the fly (the `visualize.py` path trie, the `endpoint_report` parent scan). Nothing can traverse them.
+
+**Goal:** one embedded node per real thing, typed by an explicit ontology, connected by stored edges. Each node's embed text is enriched with context from its graph neighbours. Long pages are represented in full by one node, or by a few heading sections when they don't fit.
+
+**Decisions (confirmed with the user):** edges go in a Chroma lookup collection, so the store stays Chroma-only. `structure` and `behavior` are replaced by a single `graph` collection, and the old names stay as aliases for one release. A page is one node and is split into sections only if it is over budget; identical sections are shared across pages. Enrichment is deterministic graph context, with no LLM.
+
+### Architecture
+
+#### Ontology (T-box): `engine/import/ontology.py` (new)
+These constants define the node classes, the edge relations with their domain and range, and `ONTOLOGY_VERSION`. The graph builder checks every edge against them. Pages and routes are the ontology/container level. Content chunks are the entity instances under them.
+
+| Class | Embedded? | Id (keep existing ids where they exist) | Absorbs today's |
+|---|---|---|---|
+| `Origin` | yes | `md5(origin|auth_model)` | auth_model parent + segment |
+| `Route` (`route_kind`: page / action / endpoint / asset); `Page` ⊂ `Route` | yes | `build_structure.endpoint_chunk` id | structure parent + identity/posture segments |
+| `Behavior` | yes | `d.behavior_id` (findings' `source_behavior_id` keeps resolving) | behavior parent + 3 segments + embedded variants |
+| `Section` | yes | `md5(origin|normalized section text)`, so it is shared across pages | the truncated HTML lead |
+| `Form` | yes | `md5(origin|method|action template|sorted fields)` | form strings in the HTML summary |
+| `DataObject` | yes | `md5("entity|"+sig)` (same as the entity id today) | entity parent + segment; carries `shared=true` when seen at 2 or more routes |
+| `Posture` | yes | `md5(sorted missing headers, cors, cookie flags, tech)` | posture/security clauses repeated per record |
+| `param:<name>`, `cookie:<name>` | no (literal ids, edge targets only) | n/a | `param_names` and `cookies_*` CSV |
+| `Exchange`, `Finding` | existing `exchanges` and `attacks` | unchanged | `example_ids`, `variant_ids` lists |
+
+Relations: `HAS_ROUTE` (Origin→Route), `CHILD_OF` (Route→nearest ancestor Route), `HAS_BEHAVIOR` (Route→Behavior), `RETURNS` (Behavior→DataObject), `ACCEPTS` (Route→DataObject | param), `CONTAINS` (Page→Section, ordered by `ord`; Page→Form), `LINKS_TO` (Page→Route), `SUBMITS_TO` (Form→Route), `HAS_FIELD` (Form→param), `CALLS` (asset Route or Page→Route, including stub routes with `observed=false`; from `jsfacts`), `LOADS` (Page→asset Route), `HAS_POSTURE` (Route→Posture), `SETS_COOKIE` / `SENDS_COOKIE` (Route→cookie), `RELATED` (DataObject↔DataObject, weight = Jaccard), `OBSERVED_IN` (Behavior→Exchange, with `variant_key`), `TARGETS` (Finding→Route).
+
+#### Storage
+- `graph`: embedded collection (EmbeddingGemma, cosine). One record per embedded node. Metadata keeps today's filter facets (host, method, template, status, access_control, cookies, …) plus `node_type`, `route_kind`, `anchor_id` (the owning Route; for a shared Section, its first page) and `context` (the enrichment header). Written by the unchanged `vector_store.store`, so content-hash skipping and the two embed workers still apply.
+- `edges`: new lookup collection (fixed 1-d vectors, no Ollama), like `identifiers`. Id is `md5(src|rel|dst)`. Metadata is `src, src_type, rel, dst, dst_type, weight, ord, variant_key`. One hop is `edges.get(where={'src': {'$in': ids}})`, or the same on `dst`.
+- `structure` and `behavior` are deleted after `graph` and `edges` are written successfully. `attacks`, `captures`, `exchanges` and `identifiers` are unchanged. Bump `COLLECTION_SCHEMA` to `jeb-v7-graph`.
+
+#### Long pages: segmentation that doesn't depend on heading tags
+Real sites lay content out with divs, put it in script blocks, or render it client-side, so heading tags can't decide where to split. A new module, `engine/import/segment.py`, runs four layers in order over the BeautifulSoup tree that `_html_view` already parses once per body.
+
+1. **Script-embedded data first.** Parse `<script type="application/ld+json">`, `type="application/json"`, `__NEXT_DATA__`, `__NUXT__` and `window.__INITIAL_STATE__ = {…}`-style assignments with the existing `json_schema` / `structured_semantic_values`.
+   - Each payload becomes a `DataObject` (same signature scheme as API responses, so a page and its API share one node) linked by `Page -RETURNS-> DataObject`.
+   - Inline JS goes through `_script_endpoints` and becomes `CALLS` edges.
+   - This covers SPA and hydration pages, where the visible DOM is a shell.
+2. **Boilerplate removal by cross-page subtree diff.** Today's text-block hashes (`_html_blocks`, `normalize.pass_c_boilerplate`) are extended to **subtree hashes**: `md5(tag path + normalized text)` for each block-level subtree.
+   - A subtree is template if it appears on more than `BOILERPLATE_FRACTION` of a host's page routes, or on every instance of one route template.
+   - This detects chrome even when nav/footer/aside tags are missing. The existing tag-based removal stays as a cheap first pass.
+   - `_html_blocks` is persisted in `_features`, so this needs a `FEATURE_VERSION` bump.
+3. **Repeated-structure collapse.** Sibling subtrees with the same shape signature (tag + sorted class tokens + child tag sequence), when there are `REPEAT_MIN` (3) or more of them, become one `Section` with `section_kind=listing`.
+   - Its text holds the item template (field labels and link targets), the item count and 2–3 sample items.
+   - Cards, table rows, search results and long lists become one node instead of many.
+4. **DOM budget-fit split.** Walk the cleaned tree from `main` / `[role=main]` / `article` / `body`.
+   - A subtree whose visible text fits `SECTION_CAP` (~2500 chars) becomes one chunk.
+   - An oversized subtree is recursed into, and adjacent small children are merged greedily up to the cap (`SECTION_MIN_CHARS` ~300, so a chunk is never a lone button).
+   - Headings don't decide splits. A chunk's **label** comes from the first heading-like descendant (`h1–h6`, `[role=heading]`, `legend`, `caption`, `summary`, a leading `strong`/`b`, or a class/id containing `title`/`header`), falling back to `id`/`aria-label`.
+5. **Text-window fallback.** If one leaf block still exceeds `SECTION_CAP`, because the DOM is flat (a single div, or text joined by `<br>`), split it into windows of `SECTION_CAP` with ~10% overlap, breaking at sentence boundaries where possible.
+
+Then the page is assembled:
+- If the whole cleaned text fits `PAGE_EMBED_CAP` (~4000 chars, about 1k tokens, well inside EmbeddingGemma's 2048), the **Page node holds everything** and no Section nodes are made.
+- Otherwise the Page node keeps the title, the outline of chunk labels and a lead. Each chunk becomes a `Section` (`section_kind`: block / listing / window, `ord` on its `CONTAINS` edge), capped at `MAX_SECTIONS_PER_PAGE` (8, ranked by text length). Anything dropped is counted in `LEDGER`.
+- A Section's id hashes its normalized text, so identical content on several pages is one node with several `CONTAINS` edges.
+
+Everything is deterministic: no embedding calls are used to pick boundaries, which keeps the bit-identical export gate.
+
+#### Long JavaScript bundles
+**Today:** `static_asset_summary` scans the first 2 MB (`STATIC_SCAN_CHARS`) of a bundle and keeps 15 endpoint-like strings and 6 credential-assignment names. The result is one ≤400-char label. Everything past the cap, and every second-order fact, is lost. (The full body is still recoverable from `raw_base64`, so this is an extraction limit, not a storage limit.)
+
+**Approach:** extract facts and keep code out of the index. Minified code embeds poorly and splitting it into text chunks would multiply vectors for little recall, so a bundle is never cut into text chunks. A new module, `engine/import/jsfacts.py`, turns a bundle into graph facts:
+
+1. **Lex string literals across the whole body.** A small hand-written scanner understands `'…'`, `"…"`, template literals (with `${…}` replaced by `{param}`), escapes and comments, so the regex can't match across string boundaries.
+   - It streams over the body in windows. There is a hard cap `JS_SCAN_CHARS` (8 MB) and a cap on literals; the ledger counts what is skipped.
+   - No JS parser dependency is needed. (Optional later: `tree-sitter-javascript`, if call-site accuracy proves insufficient.)
+2. **Classify each literal:**
+   - **Endpoint**: a relative path, an absolute URL, or a GraphQL document (`query X {`, `mutation`). Run it through `templatize_path`. Look back ~80 chars for a call site (`fetch(`, `axios.`, `.get(`/`.post(`, `method:"PUT"`) to infer the method; otherwise the method is `ANY`.
+   - **External origin**: a third-party host. It becomes an `Origin` node with `observed=false`.
+   - **Credential-shaped**: the existing `_CREDENTIAL_ASSIGN_RE` names, plus known key shapes (`AKIA…`, `AIza…`, `sk_live_…`, `ghp_…`, JWTs). Only the name and value shape (`<aws-key:20>`) go into node text. The value goes into the `identifiers` lookup, so `jeb_query command=identifier` finds it, and the raw value stays in the exchange.
+   - **Config keys**: object keys under `__CONFIG__` / `env` / `process.env.*`-style assignments, and feature-flag names. They are recorded as fields on the Asset node.
+3. **Graph output:**
+   - The bundle is one `Route` (`route_kind=asset`) node. Its text holds the library fingerprints (from `/*! name vX.Y */` banners and `@license` headers → `lib:<name>@<ver>` literal ids, which are also added to `tech`), the source-map URL, counts per fact class, and the top endpoints.
+   - `CALLS` edges go to every endpoint. An endpoint that matches no observed route creates a **stub `Route` with `observed=false`**. Stubs are embedded with a tiny text, capped at `MAX_STUB_ROUTES_PER_HOST` (200, ranked by the number of bundles referencing them, overflow in the ledger). This makes "routes the client knows about but the capture never hit" searchable and mappable (`map kind=endpoint observed=false`).
+   - Identical bundles (same `resp_body_sha256`) are one node, linked from every page that loads them (`Page -LOADS-> asset Route`, from `<script src>` in `_page_artifacts`).
+4. **Module grouping, only when names exist.**
+   - If a bundle has named modules (webpack dev builds: `"./src/api/user.js": function…`), or a captured `.map` file supplies `sources`, the facts are grouped per module.
+   - Only modules that produced facts become `Section` nodes (`section_kind=module`, label = the source path), capped at `MAX_MODULES_PER_BUNDLE` (20).
+   - Minified production bundles with numeric module ids stay one Asset node.
+   - With a captured source map, `sourcesContent` (real, readable code) is run through the same extractor per original file. Its text is still not embedded verbatim.
+5. **Inline scripts** in HTML pages use the same extractor (replacing the 6-endpoint `_page_artifacts` scan). Their facts attach to the Page node.
+
+#### Enrichment
+Build the graph in two passes: first assemble the nodes and edges in memory, then render the text.
+- Each node gets a context header built from its 1-hop neighbours, such as: `page GET /account/settings @ app.example · title "Settings" · forms: change-password → POST /account/password · returns: user(id,email) · posture: missing content-security-policy`.
+- The header goes into the existing `embedding_title` slot (`embedding.doc_prefix` already prompts EmbeddingGemma with `title: … | text: …`) and into `metadata.context`.
+- The node's own text holds only what is specific to the node. Facts that are shared live once, on the `Posture`, `DataObject` and `Origin` nodes, and are reached through edges. This is what removes the duplication.
+- Keep the retrieval vocabulary expansions (`header_words`, `cors_words`, `ACCESS_*_WORDS`, `method_words`), and fit text with `_fit` (after the P0-1 fix below).
+
+#### Retrieval
+- `retrieval.search` queries `graph` and maps each hit to its result unit:
+  - the node itself, plus its `anchor` Route;
+  - for a `Posture` or `DataObject` hit, the list of linked routes (bounded).
+- Diversity is keyed on `anchor_id`. Findings and the synthetic nodes are exempt. This replaces the segment→parent collapse and resolves TODO P1-2/P1-3 by construction.
+- Each result carries a bounded `neighbors` summary (one `edges.get`, one `graph.get`).
+
+### Implementation phases
+
+**Phase 0: prerequisites from the bugfix plan above.** (P0-1, P0-2, T-1, T-2 are fixed but untested; see the handoff status.) These touch the same code, so land them first, one commit each:
+- P0-1: `_fit` termination.
+- P0-2: version bumps.
+- T-1: the fixture cache key includes the engine hash, otherwise graph changes are invisible to `run.sh`.
+- T-2: a missing digest baseline fails.
+- P1-1 (sorted variant signatures) can wait, because variants stop being embedded.
+
+**Phase 1: ontology and graph builder (pure, no Chroma).**
+- New `engine/import/ontology.py` and `engine/import/build_graph.py`. `build_graph(annotated, models) -> (nodes, edges)` reuses:
+  - `build_structure.build_endpoint_nodes`, `build_entities` and `_dominant_schema`;
+  - `build_behavior._representative`, `_variant_groups` and `_parent_metadata`;
+  - `d.behavior_collapse_key`, `d.behavior_variant_key`, `d.templatize_path` (to resolve link and form targets to known route templates on the same origin) and `normalize.build_auth_models`.
+- `CHILD_OF`: port the trie logic from `visualize.py:577-603`.
+- Validate every edge against the ontology.
+
+**Phase 2: page content extraction (`engine/import/segment.py`, new).**
+- Implement the five layers above as pure functions over a soup: `script_payloads`, `subtree_hashes`, `collapse_repeats`, `fit_split` and `window_split`, plus `segment_page(body, boilerplate) -> {title, outline, lead, chunks, payloads, forms, links}`.
+- `distill._html_view` calls `subtree_hashes` so the page is still parsed only once (the `html.parse` call count in tier C must not rise). Structured forms (`method`, `action`, `fields`) and raw link hrefs are returned next to today's display strings.
+- `normalize.pass_c_boilerplate` works on subtree hashes and adds the per-route-template rule. Bump `FEATURE_VERSION`.
+- Segmentation needs the body. Run it in `streaming.annotate_features`, where `_resp_body` is already loaded per batch, and keep the results on the annotated record (`a['_segments']`). Pop them once the graph is built.
+- New constants in `distill.py`: `PAGE_EMBED_CAP`, `SECTION_CAP`, `SECTION_MIN_CHARS`, `MAX_SECTIONS_PER_PAGE`, `REPEAT_MIN`. `_LEAD_SCAN_CHARS` stays the hard read bound.
+
+**Phase 2b: JavaScript facts (`engine/import/jsfacts.py`, new).**
+- Implement `lex_strings(body, limit)`, `classify(literal, lookbehind)`, `library_banners(body)`, `webpack_modules(body)` and `sourcemap_facts(map_json)`, plus `js_facts(body, ct) -> {libs, endpoints[(method, template, module)], origins, secrets[(name, shape, value)], config_keys, sourcemap_url, modules}`.
+- Call it from `distill.distill_response` for `static_asset` JS (replacing `static_asset_summary`'s scan), and from `segment_page` for inline scripts.
+- Compact facts go into `_features` (bump `FEATURE_VERSION`). Secret values go through `identifier_pairs` (bump `IDENTIFIER_VERSION`).
+- `.map` responses are paired with their bundle in `build_graph` by the `sourceMappingURL` match.
+- New constants: `JS_SCAN_CHARS`, `JS_LITERAL_CAP`, `MAX_STUB_ROUTES_PER_HOST`, `MAX_MODULES_PER_BUNDLE`. `STATIC_SCAN_CHARS` / `STATIC_ENDPOINT_CAP` go away.
+
+**Phase 3: text rendering and enrichment.**
+- In `distill.py`, add `graph_node_text(node)` and `graph_context(node, neighbors)` per class. These replace `structure_embed_text`, `structure_segment_texts`, `behavior_embed_text`, `behavior_segment_texts`, `entity_embed_text` and `auth_model_embed_text`; delete those once the callers are gone.
+- Summaries (`*_summary`) stay as the compact one-liners.
+
+**Phase 4: storage wiring.**
+- `storage.py`: add `'edges'` to `LOOKUP_COLLECTIONS`, and add `sync_edges(client, edges)`. It should upsert in batches and reconcile (delete ids not in the wanted set), mirroring `store(..., reconcile=True)`.
+- `import_project.rebuild_project`:
+  - replace `structure_chunks` / `behavior_chunks` with `build_graph`, then `store(semantic_collection(client,'graph',ef,True), hydrate_chunks(...))` (Behavior nodes keep raw evidence in `page_content`), then `sync_edges`;
+  - after both succeed, delete `structure` and `behavior` if present;
+  - update `EMBEDDED_COLLECTIONS`, `collection_counts` and `profiles_ok`;
+  - the `version` digest includes `ONTOLOGY_VERSION`;
+  - add ledger counters: `graph.nodes.<type>`, `graph.edges.<rel>`, `pages.sectioned`, `sections.shared`, `sections.dropped_by_cap`.
+- `findings.py` / `migrate_attacks`: write a `TARGETS` edge per finding. `repair_identifiers` also repairs missing `TARGETS` edges.
+
+**Phase 5: query side.**
+- `agent_interface.py`:
+  - `COLLECTIONS = ('graph', 'attacks')`. `structure` and `behavior` become aliases that add a `node_type $in` filter and a note to the response.
+  - `has_segments` becomes node-type logic.
+  - add a `graph` subcommand: `target`, `rel?`, `direction` (out/in/both), `depth` ≤ 2, `limit`.
+  - `map kind=` gains page / form / data_object / posture / section.
+- `retrieval.py`: anchor mapping, diversity and neighbours, as above.
+- `endpoint_report.py`: build the report from `HAS_BEHAVIOR` / `RETURNS` / `CONTAINS` / `HAS_POSTURE` edges instead of `parent_index()` scans and `example_ids`.
+- `hints.py`: add `graph` follow-ups (for example, from a Page to its forms).
+- `src/tools.ts`: collection enums, the new command and fields (fold into the P0-3 allow-list).
+- Update `agents/jebediah.md` and `README.md` (collections table, tools, design).
+
+**Phase 6: visualize.** `visualize.py` graph mode reads `graph` + `edges` directly. Delete the trie reconstruction and the `entity_links` parsing.
+
+**Phase 7: tests and baselines.**
+- `tests/make_capture.py`: add pages that exercise every segmentation layer, each with needle text deep inside, and emit the expected nodes, edges and chunk labels into `ground_truth.json`:
+  - a long **div-only** page with no h-tags, over `PAGE_EMBED_CAP`;
+  - a **flat** page (one div, `<br>`-separated text), to trigger the window fallback;
+  - a **listing** page with 30 cards, which must become one listing Section;
+  - a **hydration** page whose content is only in `__NEXT_DATA__` / JSON-LD, which must become a DataObject shared with its API route;
+  - chrome **without nav/footer tags** repeated across pages, which must be stripped by the subtree diff;
+  - a shared widget on several pages, which must become one shared Section;
+  - a form whose action resolves to a known route;
+  - a **>2 MB minified bundle** with endpoints and a fake `AKIA…` key placed past the old 2 MB cap, a `/*! react v18.2.0 */` banner, and endpoints that were never requested. Expect `CALLS` edges, stub routes with `observed=false`, the key found by `command=identifier`, and `lib:react@18.2.0`;
+  - a **webpack dev bundle** with named modules plus a captured `.map`. Expect module Sections only for modules that have facts;
+  - the same bundle loaded by 3 pages. Expect one Asset node and 3 `LOADS` edges.
+- Tier A (`bench_correctness.py`):
+  - node counts per type;
+  - the edge sets for the known routes (`SUBMITS_TO`, `RETURNS`, `LINKS_TO`, `CHILD_OF`);
+  - shared-section dedupe;
+  - the `graph` command's schema and hints.
+- Unit tests for `jsfacts.py`: the lexer on escapes, template literals, comments and regex-like `/…/` strings; method inference from call sites; no secret value ever appears in node text.
+- Unit tests for `segment.py` on small HTML strings: each layer in isolation, determinism (same input gives the same chunks and ids), and that no chunk exceeds `SECTION_CAP`.
+- Tier B (`bench_retrieval.py`): add graded needle queries, one per new page shape (div-only, flat, listing, hydration). Map each query's `in` to `graph` plus its alias.
+- Tier C (`bench_perf.py`): report embedded record counts per collection; patch `build_graph` phases.
+- Review the diffs, then `--update-baseline`.
+
+### Success criteria (fixture)
+- Embedded records drop from 717 to roughly half or fewer. Report the actual number; the target is ≤ 400.
+- The `store` phase time drops roughly in proportion.
+- Tier B recall@k and nDCG stay at or above their current floors. The new needle queries (div-only, flat, listing, hydration pages) hit at rank ≤ 3. The tier C `html.parse` count does not increase.
+- Tier A passes, including the existing entity grouping, `related` scores and access-control classification, which carry over through `DataObject` and `Route`.
+- `command=rebuild` on a pre-graph project keeps finding IDs, creates `graph` + `edges`, and removes `structure` + `behavior`.
+
+### Verification
+1. `engine/.venv/bin/python -m pytest`-style unit checks in `tests/test_units.py` (from T-8): `build_graph` on a hand-built annotated list. Checks: every edge passes the ontology, ids are stable across two runs, and shared sections dedupe.
+2. `./tests/run.sh --fresh`: all three tiers. Compare against `tests/baseline/`, then `--update-baseline`.
+3. Take a copy of a project built before this change and run `jeb_import command=rebuild`. `command=status` should show `graph` and `edges` under embedded/lookup, no `structure`/`behavior`, the ledger graph counters, and unchanged `attacks` ids.
+4. In OpenCode:
+   - `jeb_query command=search text="..." collection=behavior` should work through the alias with a note;
+   - `command=graph target=<page id>` should list its sections and forms;
+   - `command=endpoint target=/login` should show behaviors, forms, posture and data objects from edges;
+   - `jeb_visualize mode=graph` should render from the stored edges.
