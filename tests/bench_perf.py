@@ -24,7 +24,7 @@ import fixture
 TESTS = os.path.dirname(os.path.abspath(__file__))
 BASELINE = os.path.join(TESTS, 'baseline', 'perf.json')
 DIGESTS = os.path.join(TESTS, 'baseline')
-GATED = ('structure', 'behavior', 'exchanges')
+GATED = ('graph', 'edges', 'exchanges')
 
 sys.path.insert(0, os.path.join(fixture.ENGINE, 'import'))
 sys.path.insert(0, os.path.join(fixture.ENGINE, 'query'))
@@ -93,6 +93,7 @@ def instrument(counters):
     import distill
     import embedding
     import import_project
+    import build_graph
     import build_structure
     import storage
 
@@ -111,8 +112,10 @@ def instrument(counters):
                         (import_project, 'hydrate_chunks'),
                         (import_project, 'store'),
                         (import_project, 'extract_features'),
+                        (build_graph, 'build_graph'),
                         (build_structure, 'build_endpoint_nodes'),
                         (build_structure, 'build_entities'),
+                        (import_project, 'sync_edges'),
                         (storage, 'sync_identifiers')]:
         counters.time(owner, name, f'{name}')
     counters.count(import_project, 'extract_features', 'features.extract')
@@ -137,9 +140,11 @@ def cold_import(counters, project):
         started = time.perf_counter()
         import_project.ingest(client, captures, fixture.CAPTURE, config)
         timings['ingest'] = round(time.perf_counter() - started, 3)
+        import_project.d.ledger_reset()
         started = time.perf_counter()
         import_project.rebuild_project(client, captures, config, False)
         timings['rebuild_from_ingest'] = round(time.perf_counter() - started, 3)
+        import_project.d.ledger_reset()
         started = time.perf_counter()
         import_project.rebuild_project(client, captures, config, True)
         timings['forced_rebuild'] = round(time.perf_counter() - started, 3)

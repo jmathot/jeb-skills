@@ -25,6 +25,9 @@ from urllib.parse import urlparse, parse_qs
 
 from bs4 import BeautifulSoup, Comment
 
+import jsfacts
+import segment
+
 # ---------------------------------------------------------------------------
 # Caps
 # ---------------------------------------------------------------------------
@@ -45,8 +48,6 @@ HTML_FORMS_CHARS = 160
 HTML_LINKS_CHARS = 120
 HTML_ARTIFACT_CHARS = 140
 HTML_ARTIFACT_CAP = 12         # comments / script endpoints / meta kept per page
-STATIC_ENDPOINT_CAP = 15       # endpoint-like strings kept from a JS asset
-STATIC_SCAN_CHARS = 2_000_000  # bytes of a JS asset scanned for endpoints
 TEXT_OTHER_CAP = 500
 TECH_CAP = 6                   # technology / framework response headers kept
 VARIANT_KEY_VALUES = frozenset({
@@ -433,7 +434,9 @@ def graphql_operation(req_body: str, url: str = '') -> str:
         if isinstance(obj, dict):
             query = str(obj.get('query', ''))
     except Exception:
-        query = req_body or ''
+        body = re.sub(r'#[^\r\n]*', ' ', req_body or '').lstrip()
+        if re.match(r'(\{|(query|mutation|subscription|fragment)\b)', body):
+            query = body
     if not query:
         query = parse_qs(urlparse(url).query).get('query', [''])[0]
     query = re.sub(r'#[^\r\n]*', ' ', query)
@@ -1074,11 +1077,11 @@ def request_variant_signature(body: str, content_type='') -> str:
         return ''
     if 'json' in (content_type or '').lower() or _looks_json(body):
         sig, _summary, keys = structured_schema(body, content_type)
-        return md5('|'.join([sig, ','.join(keys),
+        return md5('|'.join([sig, ','.join(sorted(keys)),
                              *structured_semantic_values(body, VARIANT_KEY_VALUES)]))
     if 'xml' in (content_type or '').lower():
         sig, _summary, keys = structured_schema(body, content_type)
-        return md5('|'.join([sig, ','.join(keys)]))
+        return md5('|'.join([sig, ','.join(sorted(keys))]))
     return ''
 
 
@@ -1091,7 +1094,7 @@ def response_variant_signature(resp_class, body, content_type='', redirect_locat
     if resp_class == 'api_structured':
         sig, _summary, keys = structured_schema(body, content_type)
         semantic = structured_semantic_values(body, VARIANT_KEY_VALUES)
-        return md5('|'.join([resp_class, content_type, sig, ','.join(keys), *semantic]))
+        return md5('|'.join([resp_class, content_type, sig, ','.join(sorted(keys)), *semantic]))
     if resp_class in ('html_document', 'spa_shell'):
         return md5(page_fingerprint(body) + '|' + html_page_summary(body))
     if resp_class in ('binary', 'undecodable', 'empty'):
@@ -1114,9 +1117,6 @@ _SCRIPT_ENDPOINT_RE = re.compile(
     r'''["'`](/[A-Za-z0-9_\-./{}:$]*[A-Za-z][A-Za-z0-9_\-./{}:$]*(?:\?[A-Za-z0-9_\-=&%.{}$]*)?)["'`]''')
 _ASSET_SUFFIXES = ('.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff',
                    '.woff2', '.ttf', '.eot', '.map', '.webp', '.html', '.htm')
-_CREDENTIAL_ASSIGN_RE = re.compile(
-    r'''["']?(api[_-]?key|client[_-]?secret|secret|access[_-]?token|auth[_-]?token|password|passwd)["']?\s*[:=]\s*["'][^"'\s]{8,}''',
-    re.I)
 _BLOCK_TAGS = ['h1', 'h2', 'h3', 'h4', 'li', 'p', 'a', 'button', 'label', 'td', 'th', 'span']
 _LEAD_SCAN_CHARS = 20000
 
@@ -1186,10 +1186,13 @@ def _page_artifacts(soup) -> list:
 @lru_cache(maxsize=4)
 def _html_view(body: str) -> dict:
     view = {'fingerprint': '', 'blocks': {}, 'text_len': 0, 'title': '', 'headings': [],
-            'forms': [], 'links': [], 'artifacts': [], 'lead': ''}
+            'forms': [], 'links': [], 'artifacts': [], 'lead': '',
+            'payload_texts': [], 'inline_js': '', 'loads': [], 'chunks': [], 'sforms': [], 'rlinks': []}
     try:
         soup = BeautifulSoup(body, _HTML_PARSER)
         view['artifacts'] = _page_artifacts(soup)
+        pre = segment.pre_clean(soup)
+        view.update(payload_texts=pre['payloads'], inline_js=pre['inline_js'], loads=pre['loads'])
         for t in soup(['script', 'style', 'noscript', 'svg']):
             t.decompose()
     except Exception:
@@ -1225,6 +1228,9 @@ def _html_view(body: str) -> dict:
     for el in soup.find_all('header'):
         if el.find(['h1', 'h2', 'h3']) is None:
             el.decompose()
+
+    post = segment.post_clean(soup)
+    view.update(chunks=post['chunks'], sforms=post['forms'], rlinks=post['links'])
 
     seen = set()
     for h in soup.find_all(['h1', 'h2', 'h3']):
@@ -1262,7 +1268,8 @@ def _html_view(body: str) -> dict:
 def html_text_blocks(body: str):
     """Hashes of the normalised text blocks of an HTML page, for cross-page
     boilerplate frequency."""
-    return set(_html_view(body)['blocks'])
+    view = _html_view(body)
+    return set(view['blocks']) | {c['hash'] for c in view['chunks']}
 
 
 def page_fingerprint(body: str) -> str:
@@ -1282,7 +1289,7 @@ def _drop_blocks(text: str, blocks) -> str:
     return pattern.sub(' ', text)
 
 
-def html_page_summary(body: str, boilerplate=None) -> str:
+def html_page_summary(body: str, boilerplate=None, full_text='') -> str:
     """Distil an MPA page to its discriminating parts (chrome + boilerplate removed).
 
     `boilerplate` is a set of block hashes (see block_hash). Each part has its own
@@ -1305,6 +1312,10 @@ def html_page_summary(body: str, boilerplate=None) -> str:
     if view['artifacts']:
         bits.append(_truncate("notes: " + " ; ".join(view['artifacts']), HTML_ARTIFACT_CHARS, 'html.notes'))
 
+    if full_text:
+        # The whole cleaned page fits the page budget, so the node holds all of it.
+        bits.append("text: " + full_text)
+        return _truncate(" | ".join(bits), segment.PAGE_EMBED_CAP + HTML_SUMMARY_CAP, 'html.summary')
     lead = view['lead']
     if boilerplate:
         lead = _drop_blocks(lead, (t for h, t in view['blocks'].items() if h in boilerplate))
@@ -1315,7 +1326,47 @@ def html_page_summary(body: str, boilerplate=None) -> str:
     return _truncate(" | ".join(bits), HTML_SUMMARY_CAP + 150, 'html.summary')
 
 
-def distill_response(resp_class, body, resp_ct, redirect_location, boilerplate=None):
+def page_facts(body: str, boilerplate=None) -> dict:
+    """Segmentation of one HTML page for the graph: the text the page node embeds,
+    the sections it splits into when it does not fit, and the structured facts
+    (forms, links, loaded scripts, embedded data signatures, inline-JS facts)
+    that become edges. Compact: no secret values, no raw body."""
+    boilerplate = boilerplate or ()
+    view = _html_view(body)
+    chunks = view['chunks']
+    # Template text is removed at two grains: whole chunks by hash (in `select`), and
+    # individual repeated text blocks (nav links, widget captions) out of the chunk
+    # text, so chrome inside a small page still goes.
+    template_blocks = [t for h, t in view['blocks'].items() if h in boilerplate]
+    if template_blocks:
+        cleaned = []
+        for c in chunks:
+            text = ' '.join(_drop_blocks(c['text'], template_blocks).split())
+            if len(text) >= 3:
+                cleaned.append(dict(c, text=text, hash=segment.chunk_hash(text)) if text != c['text'] else c)
+        chunks = cleaned
+    chosen = segment.select(chunks, boilerplate)
+    LEDGER['segments.boilerplate_chunks_dropped'] += chosen['boilerplate_dropped']
+    LEDGER['segments.sections_dropped_by_cap'] += chosen['sections_dropped']
+    if chosen['sections']:
+        LEDGER['segments.pages_sectioned'] += 1
+    payloads = []
+    for text in view['payload_texts']:
+        sig, _summary, keys = structured_schema(text, 'application/json')
+        if sig:
+            payloads.append({'sig': sig, 'keys': keys})
+    js = jsfacts.compact(jsfacts.js_facts(view['inline_js'])) if view['inline_js'] else None
+    full = chosen['text']
+    embed = html_page_summary(body, boilerplate, full_text=full)
+    if chosen['sections'] and chosen['outline']:
+        embed = _truncate(embed + " | sections: " + " / ".join(chosen['outline'][:8]), HTML_SUMMARY_CAP + 400, 'html.summary')
+    return {'title': view['title'], 'embed': embed, 'full': bool(full),
+            'outline': chosen['outline'], 'sections': chosen['sections'],
+            'forms': view['sforms'], 'links': view['rlinks'], 'loads': view['loads'],
+            'payloads': payloads, 'js': js}
+
+
+def distill_response(resp_class, body, resp_ct, redirect_location, boilerplate=None, page_origin=''):
     """Route a response to the right distiller. Returns (distilled_str, schema_sig, schema_keys)."""
     if resp_class == 'api_structured':
         sig, summary, keys = structured_schema(body, resp_ct)
@@ -1327,7 +1378,7 @@ def distill_response(resp_class, body, resp_ct, redirect_location, boilerplate=N
         return _truncate("SPA application shell" +
                          (" | " + summary if summary else ""), HTML_SUMMARY_CAP + 150), '', []
     if resp_class == 'static_asset':
-        return static_asset_summary(body, resp_ct), '', []
+        return static_asset_summary(body, resp_ct, page_origin), '', []
     if resp_class == 'redirect':
         return f"redirect -> {redirect_location}".strip(), '', []
     if resp_class == 'empty':
@@ -1337,27 +1388,29 @@ def distill_response(resp_class, body, resp_ct, redirect_location, boilerplate=N
     return _truncate(body, TEXT_OTHER_CAP), '', []
 
 
-def static_asset_summary(body: str, resp_ct: str) -> str:
+def is_javascript(resp_ct: str) -> bool:
+    ct = (resp_ct or '').lower()
+    return 'javascript' in ct or 'ecmascript' in ct or ct.endswith('/js')
+
+
+def static_asset_summary(body: str, resp_ct: str, page_origin: str = '') -> str:
     """Label a static asset; for JavaScript also surface what the code talks to.
 
     A bundle names the API routes the client calls and sometimes embeds
-    credential-shaped assignments. Routes are kept, credential assignments are
-    reduced to their *names* (the value stays in the stored exchange).
+    credential-shaped literals. Routes are kept; credentials are reduced to their
+    *names and shapes* (the value stays in the stored exchange and the
+    identifier index).
     """
     label = f"static asset {resp_ct or ''}".strip()
-    ct = (resp_ct or '').lower()
-    if not ('javascript' in ct or 'ecmascript' in ct or ct.endswith('/js')) or not body:
+    if not is_javascript(resp_ct) or not body:
         return label
-    scan_text = body[:STATIC_SCAN_CHARS]
-    bits = [label]
-    endpoints = _script_endpoints(scan_text, STATIC_ENDPOINT_CAP)
-    if endpoints:
-        bits.append("endpoints: " + ", ".join(endpoints))
-    names = list(dict.fromkeys(m.group(1).lower()
-                               for m in _CREDENTIAL_ASSIGN_RE.finditer(scan_text)))[:6]
-    if names:
-        bits.append("credential-like assignments: " + ", ".join(names))
-    return _truncate(" | ".join(bits), 400)
+    facts = jsfacts.js_facts(body, page_origin)
+    stats = facts['stats']
+    LEDGER['js.bundles'] += 1
+    LEDGER['js.chars_unscanned'] += stats['skipped_chars']
+    LEDGER['js.literals_unexamined'] += stats['skipped_literals']
+    LEDGER['js.endpoints_dropped_by_cap'] += facts['endpoints_total'] - len(facts['endpoints'])
+    return jsfacts.summary(facts, label)
 
 
 # ---------------------------------------------------------------------------
@@ -1533,52 +1586,19 @@ def behavior_embed_text(a) -> str:
     if a.get('graphql_operation'):
         parts.append(("graphql: " + a['graphql_operation'], 160))
     parts.append((f"status: {a['status_code']} {status_class(a['status_code'])}".strip(), 40))
-    if a['resp_distilled']:
+    page = a.get('page')
+    whole_page = bool(page and page['full'])
+    if page and page['embed']:
+        parts.append(("resp: " + page['embed'], segment.PAGE_EMBED_CAP if whole_page else 700))
+    elif a['resp_distilled']:
         parts.append(("resp: " + a['resp_distilled'], 700))
     parts.append(("auth: " + (reqf.get('auth_role') or 'anonymous'), 80))
     security = _security_clause(reqf, respf)
     if security:
         parts.append((" | ".join(security), 450))
-    return _fit(parts)
-
-
-def behavior_segment_texts(a):
-    """Protocol-aware child representations used by hybrid retrieval."""
-    reqf, respf = a['req_features'], a['resp_features']
-    route = [f"request route {a['method']} {path_words(a['endpoint_template'])}"
-             + (f" ({method_words(a['method'])})" if method_words(a['method']) else ''),
-             a['endpoint_template'], f"host: {a['host']}"]
-    if a['param_names']:
-        route.append("parameters: " + ", ".join(a['param_names']))
-    if a['req_content_type']:
-        route.append("request content: " + a['req_content_type'])
-    if a.get('req_schema_keys'):
-        route.append("request keys: " + ", ".join(a['req_schema_keys'][:20]))
-    if a.get('req_semantic'):
-        route.append("request values: " + ", ".join(a['req_semantic'][:8]))
-    if a.get('graphql_operation'):
-        route.append("graphql: " + a['graphql_operation'])
-
-    response = [f"response for {a['method']} {a['endpoint_template']}",
-                f"status: {a['status_code']} {status_class(a['status_code'])}",
-                f"type: {a['resp_content_type'] or a['resp_class']}"]
-    if a['resp_distilled']:
-        response.append(a['resp_distilled'])
-    if a.get('access_class'):
-        response.append("access outcome: " + access_class_words(a['access_class']))
-
-    security = [f"access and session behavior on {a['method']} {a['endpoint_template']}",
-                "auth role: " + (reqf.get('auth_role') or 'anonymous'),
-                "auth mechanism: "
-                + ", ".join(auth_words([reqf.get('auth_mechanism') or 'none']))]
-    security.extend(_security_clause(reqf, respf))
-    if a.get('anon_matches_auth'):
-        security.append("anonymous response matches authenticated response")
-    return {
-        'route': _truncate(" | ".join(route), EMBED_TEXT_CAP, 'embed_text'),
-        'response': _truncate(" | ".join(response), EMBED_TEXT_CAP, 'embed_text'),
-        'security': _truncate(" | ".join(security), EMBED_TEXT_CAP, 'embed_text'),
-    }
+    # A page that fits its budget is held whole by its node; everything else keeps
+    # the standard cap.
+    return _fit(parts, cap=segment.PAGE_EMBED_CAP + 1000 if whole_page else EMBED_TEXT_CAP)
 
 
 def behavior_summary(a) -> str:
@@ -1634,48 +1654,6 @@ def structure_embed_text(node) -> str:
     if node.get('access_control') and node['access_control'] != 'unknown':
         parts.append("access: " + ACCESS_CONTROL_WORDS[node['access_control']])
     return _fit([(p, 300) for p in parts])
-
-
-def structure_segment_texts(node):
-    identity = [f"{node['node_kind']} route {node['method']} "
-                f"{path_words(node['endpoint_template'])}"
-                + (f" ({method_words(node['method'])})"
-                   if method_words(node['method']) else ''),
-                node['endpoint_template'], f"host: {node['host']}"]
-    if node['param_names']:
-        identity.append("parameters: " + ", ".join(node['param_names']))
-    if node.get('produces'):
-        identity.append("produces: " + ", ".join(node['produces']))
-    if node.get('resp_schema_keys'):
-        identity.append("response fields: " + ", ".join(node['resp_schema_keys'][:20]))
-    if node.get('req_schema_keys'):
-        identity.append("request fields: " + ", ".join(node['req_schema_keys'][:20]))
-    if node.get('graphql_operations'):
-        identity.append("graphql operations: " + ", ".join(
-            graphql_operation_names(node['graphql_operations'])[:12]))
-
-    posture = [f"access posture for {node['method']} {node['endpoint_template']}"]
-    if node.get('status_codes'):
-        posture.append("statuses: " + ", ".join(str(s) for s in node['status_codes']))
-    if node.get('access_control') in ACCESS_CONTROL_WORDS:
-        posture.append("access: " + ACCESS_CONTROL_WORDS[node['access_control']])
-    if node.get('auth_mechanisms'):
-        posture.append("authentication: "
-                       + ", ".join(auth_words(node['auth_mechanisms'])))
-    if node.get('cookies_set'):
-        posture.append("sets cookies with the set-cookie response header: "
-                       + ", ".join(f"{name} cookie" for name in node['cookies_set']))
-    if node.get('security_headers_missing'):
-        posture.append("missing security headers: "
-                       + ", ".join(header_words(node['security_headers_missing'])))
-    if node.get('cors'):
-        posture.append("cors: " + cors_words(node['cors']))
-    if node.get('tech'):
-        posture.append("technology: " + ", ".join(node['tech'][:TECH_CAP]))
-    return {
-        'identity': _truncate(" | ".join(identity), EMBED_TEXT_CAP, 'embed_text'),
-        'posture': _truncate(" | ".join(posture), EMBED_TEXT_CAP, 'embed_text'),
-    }
 
 
 def structure_summary(node) -> str:

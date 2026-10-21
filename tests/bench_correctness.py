@@ -135,7 +135,7 @@ def check_entities(report, manifest, rows):
     docs, by_fields = {}, {}
     sig_to_fields = {}
     for row in engine:
-        document = fixture.query(['get', row['id'], '--in', 'structure'])['document']['document']
+        document = fixture.query(['get', row['id'], '--in', 'graph'])['document']['document']
         fields = tuple(re.search(r'^fields: (.*)$', document, re.M).group(1).split(', '))
         by_fields[fields] = row
         docs[fields] = document
@@ -148,8 +148,11 @@ def check_entities(report, manifest, rows):
         fields = tuple(entity['fields'])
         row, document = by_fields[fields], docs[fields]
         name = entity['name']
-        for key in ('produced_by', 'consumed_by'):
-            got = set(filter(None, str(row.get(key, '')).split(',')))
+        linked = fixture.query(['graph', row['id'], '--direction', 'in', '--limit', '200'])
+        routes = {n['id']: n for n in linked['results'] if n.get('node_type') == 'route'}
+        for key, rel in (('produced_by', 'RETURNS'), ('consumed_by', 'ACCEPTS')):
+            got = {route_ref(routes[e['src']]) for e in linked['edges']
+                   if e['rel'] == rel and e['dst'] == row['id'] and e['src'] in routes}
             report.equal(f'entities/{name}/{key}', got, set(entity[key]))
         report.equal(f'entities/{name}/identifier_field',
                      row.get('identifier_field', ''), 'id')
@@ -211,7 +214,7 @@ def check_identifiers(report, manifest):
 
 def check_evidence_roundtrip(report):
     """behavior document -> its source observations -> the original HTTP bytes."""
-    found = fixture.query(['search', '--in', 'behavior', '--path', '/api/orders/1040',
+    found = fixture.query(['search', '--in', 'graph', '--node-type', 'behavior', '--path', '/api/orders/1040',
                            '--limit', '1'])
     if not report.check('evidence/behavior document located',
                         bool(found['results']), json.dumps(found)[:200]):
@@ -300,12 +303,11 @@ def stale_wrappers():
 def check_error_paths(report):
     cases = [
         (['search', '--in', 'exchanges', 'free text'], 'exact filters'),
-        (['search', '--in', 'structure', '--status', '500'], '--status applies'),
-        (['search', '--in', 'structure', '--access-class', 'data'], 'not supported'),
-        (['search', '--in', 'behavior', '--kind', 'entity'], 'not supported'),
+        (['search', '--in', 'graph', '--node-type', 'nonsense'], '--node-type must be'),
+        (['search', '--in', 'graph', '--severity', 'high'], 'not supported'),
         (['map', '--limit', '0'], 'must be positive'),
         (['map', '--offset', '-1'], 'nonnegative'),
-        (['search', '--in', 'behavior', '--vuln-class', 'xss'], 'not supported'),
+        (['search', '--in', 'graph', '--vuln-class', 'xss'], 'not supported'),
     ]
     for argv, fragment in cases:
         payload = fixture.query(argv, check=False)

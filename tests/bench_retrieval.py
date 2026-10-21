@@ -30,7 +30,7 @@ def entity_names(manifest):
     out = {}
     page = fixture.query(['map', '--kind', 'entity', '--limit', '100'])
     for row in page['results']:
-        document = fixture.query(['get', row['id'], '--in', 'structure'])['document']['document']
+        document = fixture.query(['get', row['id'], '--in', 'graph'])['document']['document']
         fields = tuple(re.search(r'^fields: (.*)$', document, re.M).group(1).split(', '))
         out[row['schema_sig']] = by_fields.get(fields, f'unknown:{row["schema_sig"][:8]}')
     return out
@@ -173,7 +173,7 @@ def run_keyword(manifest, verbose):
 def run_screening(manifest, verbose):
     rows, ok = [], True
     for spec in manifest['screened']:
-        payload = fixture.query(['search', spec['q'], '--in', 'structure'])
+        payload = fixture.query(['search', spec['q'], '--in', 'graph'])
         rejected = set(t.lower() for t in payload.get('rejected_terms', []))
         action = payload.get('screening_action', 'none')
         matched = set(t.lower() for t in spec['expect_rejected']) <= rejected \

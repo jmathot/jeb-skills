@@ -12,8 +12,8 @@ LOAD_BATCH = 32
 
 # Bump whenever extract_features / identifier_pairs output can change
 # (distill.py, normalize.py, parse.py).
-FEATURE_VERSION = 'features-v3'
-IDENTIFIER_VERSION = 'identifiers-v3'
+FEATURE_VERSION = 'features-v4'
+IDENTIFIER_VERSION = 'identifiers-v4'
 PARSER_VERSION = 'parser-v2'
 
 
@@ -36,6 +36,10 @@ def extract_features(item):
 def identifier_pairs(item):
     pairs = [('url.' + field, value) for field, value in
              d.extract_identifier_values(d.urlparse(item['url']).path, [], item['url'])]
+    response = item.get('response', {})
+    if d.is_javascript(d.header_get(response.get('headers', {}), 'content-type')):
+        pairs += [('response.js_credential', value) for value in
+                  d.jsfacts.secret_values(response.get('analysis_body', ''))]
     for side in ('request', 'response'):
         http = item.get(side, {})
         pairs += [(side + '.' + field, value) for field, value in
@@ -102,7 +106,7 @@ def annotate_features(records, load_many, config):
 
 
 def _needs_raw(meta):
-    return meta.get('granularity') in ('parent', 'variant') and bool(meta.get('exchange_id'))
+    return meta.get('node_type') == 'behavior' and bool(meta.get('exchange_id'))
 
 
 def hydrate_chunks(chunks, load_many):

@@ -1178,7 +1178,7 @@
   "queries": [
     {
       "q": "order record returned by id",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "entity:order": 2,
         "GET https://app.example:443/api/orders/{id}": 2,
@@ -1188,7 +1188,7 @@
     },
     {
       "q": "create a new order with a json request body",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "POST https://app.example:443/api/orders": 2,
         "PUT https://app.example:443/api/orders/{id}": 1,
@@ -1197,7 +1197,7 @@
     },
     {
       "q": "customer name and email address",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "entity:customer": 2,
         "GET https://app.example:443/api/customers/{id}": 2,
@@ -1206,7 +1206,7 @@
     },
     {
       "q": "postal address with city country and line1 fields",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "entity:address": 2,
         "entity:address_region": 2,
@@ -1217,7 +1217,7 @@
     },
     {
       "q": "product sku and price",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "entity:product": 2,
         "GET https://app.example:443/api/products/{id}": 2,
@@ -1226,7 +1226,7 @@
     },
     {
       "q": "invoice with currency amount and due date",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "entity:invoice_wide": 2,
         "GET https://app.example:443/api/invoices/{id}": 2,
@@ -1235,7 +1235,7 @@
     },
     {
       "q": "session cookie issued when signing in",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "auth_model": 2,
         "POST https://app.example:443/login": 2,
@@ -1244,7 +1244,7 @@
     },
     {
       "q": "reachable with no credential at all",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/api/public/rates": 2,
         "GET https://app.example:443/api/orders/{id}": 1,
@@ -1256,7 +1256,7 @@
     },
     {
       "q": "html page listing records in a table",
-      "in": "behavior",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/orders": 2,
         "GET https://app.example:443/dashboard": 2,
@@ -1268,14 +1268,14 @@
     },
     {
       "q": "wildcard cross origin resource sharing header",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/api/public/rates": 2
       }
     },
     {
       "q": "updates an existing record in place",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "PUT https://app.example:443/api/orders/{id}": 2,
         "PUT https://app.example:443/api/invoices/{id}": 2,
@@ -1285,7 +1285,7 @@
     },
     {
       "q": "javascript and stylesheet assets",
-      "in": "structure",
+      "in": "graph",
       "include_static": true,
       "relevant": {
         "GET https://app.example:443/static/app.js": 2,
@@ -1296,7 +1296,7 @@
     },
     {
       "q": "shipment and refund counters",
-      "in": "structure",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/api/shipments/{id}/stats": 2,
         "GET https://app.example:443/api/refunds/{id}/stats": 2,
@@ -1306,14 +1306,14 @@
     },
     {
       "q": "server error exposing a database stack trace",
-      "in": "behavior",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/api/search": 2
       }
     },
     {
       "q": "redirected to the sign in page",
-      "in": "behavior",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/legacy/{id}": 2,
         "GET https://app.example:443/api/invoices/{id}": 1,
@@ -1324,7 +1324,7 @@
     },
     {
       "q": "forbidden response to a request with no cookie",
-      "in": "behavior",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/api/customers/{id}": 2,
         "GET https://app.example:443/api/addresses/{id}": 2,
@@ -1335,7 +1335,7 @@
     },
     {
       "q": "json object describing one order",
-      "in": "behavior",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/api/orders/{id}": 2,
         "POST https://app.example:443/api/orders": 1,
@@ -1344,14 +1344,14 @@
     },
     {
       "q": "response that set a session cookie",
-      "in": "behavior",
+      "in": "graph",
       "relevant": {
         "POST https://app.example:443/login": 2
       }
     },
     {
       "q": "anonymous request served real page content",
-      "in": "behavior",
+      "in": "graph",
       "relevant": {
         "GET https://app.example:443/orders": 2,
         "GET https://app.example:443/tos": 1,
@@ -1362,7 +1362,7 @@
     },
     {
       "q": "created a new resource and returned it",
-      "in": "behavior",
+      "in": "graph",
       "relevant": {
         "POST https://app.example:443/api/orders": 2,
         "POST https://app.example:443/api/products": 2,

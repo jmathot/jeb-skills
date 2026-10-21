@@ -10,19 +10,26 @@ databases live in a separate project directory, never in this repo.
 
 ## Design
 
-- **Semantic discovery:** Ollama EmbeddingGemma vectors, explicit cosine distance,
-  protocol-aware route/response/session segments, and canonical-parent results.
-  Response content — JSON field names, and an HTML page's title, headings, form
-  fields and visible text — is carried by `behavior`; `structure` indexes
-  per-route protocol facts only, so a page is found there by route and posture
-  rather than by what it renders.
+- **Knowledge graph:** every embedded thing is one typed node in the `graph`
+  collection — origin, route, behavior, data object, posture, page section, form —
+  and the relationships between them are stored edges in `edges`
+  (`HAS_BEHAVIOR`, `RETURNS`, `CHILD_OF`, `CONTAINS`, `SUBMITS_TO`, `CALLS`, …;
+  the full ontology is `engine/import/ontology.py`). Each node's embedding
+  carries a one-hop context header built from its neighbours, with no LLM.
+- **Semantic discovery:** Ollama EmbeddingGemma-2 vectors, explicit cosine
+  distance. Response content — JSON field names, and an HTML page's title,
+  headings, form fields and visible text — is carried by `behavior` nodes; `route`
+  nodes index per-route protocol facts, so a page is found there by route and
+  posture rather than by what it renders. Long pages are split by DOM size, not
+  heading tags; JavaScript bundles become facts (endpoints, libraries, credential
+  shapes) rather than text chunks.
 - **Exact queries:** Chroma metadata filtering, literal document substring filters,
   and identifier equality lookup — the last is Chroma metadata equality over
   identifier values extracted at ingest, held in the `identifiers` collection.
   No full-text or lexical index, no FTS5, no BM25, no reciprocal-rank fusion,
   and no SQLite sidecar outside Chroma's own storage.
 - **Cumulative imports:** captures and source observations remain in Chroma;
-  structure and behavior summaries are derived across retained captures.
+  the graph is derived across retained captures.
 - **Evidence:** bounded reconstructed previews for browsing; full decoded text and
   original HTTP bytes (base64) retained in source observations.
 - **Findings:** durable attack events with unique IDs and newest-first listing.
@@ -32,15 +39,14 @@ databases live in a separate project directory, never in this repo.
 
 ### Chroma collections
 
-A project database holds six collections: three embedded, three lookup.
+A project database holds five collections that matter to a user: two embedded, four lookup (`captures`, `exchanges`, `identifiers`, `edges`).
 
-**Embedded** — the semantic search targets. EmbeddingGemma vectors, 768
+**Embedded** — the semantic search targets. EmbeddingGemma-2 vectors, 768
 dimensions, cosine distance:
 
 | Collection | Records |
 |---|---|
-| `structure` | Per-route protocol facts, auth-model and entity summaries, and semantic segments — no response body content |
-| `behavior` | Canonical behavior summaries carrying the distilled response body (JSON field names; HTML title, headings, forms, text), segments, and raw variants |
+| `graph` | One record per node, told apart by `node_type`: `route` (protocol facts), `behavior` (distilled response body), `origin` (auth model), `data_object` (a schema shared by 2+ routes), `posture` (headers/CORS shared by routes), `section`, `form`, plus `observed=false` stub routes named by client code |
 | `attacks` | Recorded testing events and evidence |
 
 **Lookup** — exact `get()` and metadata equality only. These use fixed
@@ -51,15 +57,16 @@ one-dimensional vectors and never call Ollama:
 | `captures` | Source digest, configuration, processing version, import state |
 | `exchanges` | Capture-scoped observations, source item position, full evidence |
 | `identifiers` | Exact value/field/source-document associations |
+| `edges` | Typed relations between graph nodes (`src`, `rel`, `dst`, `weight`, `ord`, `variant_key`); one hop is one filtered `get` |
 
 `exchanges` is what makes `command=rebuild` work without the original XML, and
 the `captures` collection's own metadata carries project state (`index_state`,
 `index_version`, analysis config).
 
-`collection=` accepts the three embedded names plus `exchanges` (for `contains`
-over full decoded source HTTP). `captures` and `identifiers` are not search
-targets — reach them with `jeb_import command=status` and
-`jeb_query command=identifier`. `command=status` reports every collection's
+`collection=` accepts `graph`, `attacks` and `exchanges` (for `contains` over full
+decoded source HTTP); `node_type=` narrows `graph`. `captures`, `identifiers` and
+`edges` are not search targets — reach them with `jeb_import command=status`,
+`jeb_query command=identifier` and `jeb_query command=graph`. `command=status` reports every collection's
 record count under both groups.
 
 Chroma may use SQLite internally; this application only manages Chroma
@@ -67,7 +74,7 @@ collections and APIs.
 
 ## Install
 
-Requirements: Python 3.10+, and Ollama 0.11.10+ with `embeddinggemma:latest`
+Requirements: Python 3.10+, and Ollama 0.11.10+ with `embeddinggemma-2:latest`
 pulled.
 
 Run the install script, which symlinks the plugin and agent into OpenCode's
@@ -85,7 +92,7 @@ entry, and `OPENCODE_CONFIG_DIR=...` to override the config location (default
 ```bash
 ln -s "$(pwd)" ~/.config/opencode/plugins/jebediah
 ln -s "$(pwd)/agents/jebediah.md" ~/.config/opencode/agents/jebediah.md
-ollama pull embeddinggemma:latest
+ollama pull embeddinggemma-2:latest
 ```
 
 On first load the plugin **auto-bootstraps** the Python engine: it creates
@@ -106,7 +113,7 @@ Set RAG hyperparameters as plugin `options` in `opencode.json(c)` (see
 
 | Option | Effect |
 |---|---|
-| `maxDistance.{structure,behavior,attacks}` | Per-collection cosine distance cutoff (0–2). |
+| `maxDistance.{graph,attacks}` | Per-collection cosine distance cutoff (0–2). Defaults of 0.38 are calibrated for EmbeddingGemma-2, whose distances are compressed (relevant hits 0.20–0.37, off-topic queries 0.41+). |
 | `candidateCeiling` | Upper bound on adaptive candidate expansion. |
 | `depth.{quick,normal,deep}.{candidateK,nResults,maxPerEndpoint,snippetLen,rawChars}` | Retrieval budget presets. |
 | `ollamaTimeoutSeconds` | Embedding request timeout. |
@@ -125,9 +132,9 @@ engine refuses queries against a mismatched database:
 
 | Option | Default |
 |---|---|
-| `embeddingModel` | `embeddinggemma:latest` |
+| `embeddingModel` | `embeddinggemma-2:latest` |
 | `embeddingDimensions` | `768` |
-| `embeddingScheme` | `embeddinggemma-v5-titled-768d` |
+| `embeddingScheme` | `embeddinggemma2-v1-titled-768d` |
 | `distanceMetric` | `cosine` |
 | `ollamaUrl` | `http://localhost:11434/api/embeddings` |
 
@@ -159,12 +166,13 @@ Investigate the capture. Set `command`:
 | command | key arguments |
 |---|---|
 | `endpoint` | `target` (path or full URL) — the first move for any named route |
-| `map` | `kind` (endpoint/auth_model/entity), `limit`, `offset` |
-| `search` | `text` and/or filters; `collection` (`--in`), `depth`, `loose` |
+| `map` | `kind` (page/endpoint/action/auth_model/entity), `node_type`, `limit`, `offset` |
+| `search` | `text` and/or filters; `collection` (`--in`), `node_type`, `depth`, `loose` |
 | `get` | `target` (document/exchange id); `original` for raw base64 |
 | `similar` | `target` (semantic document id) |
 | `identifier` | `target` (exact value); `offset`, `limit` |
-| `evidence` | `target` (behavior id); `signal` (content/schema) |
+| `evidence` | `target` (behavior node id); `signal` (content/schema) |
+| `graph` | `target` (any graph node id); `rel`, `direction` (out/in/both), `hops` (1–2), `limit` |
 | `attacks` | list findings; `vuln_class`, `verdict`, `severity` |
 | `record-attack` | `vuln_class`, `endpoint` (required); `method`, `param`, `payload`, `status`, `verdict`, `evidence`, `request`/`response`, `event_id` |
 
@@ -174,7 +182,8 @@ Filters accepted by `map`/`search`/`attacks`: `host`, `path`, `method[]`,
 `include_static`, `anon_matches_auth`, `cookie_issues`, `jwt`.
 
 Semantic search returns cosine `distance` (lower is closer, not a confidence
-score), `matched_ids`, representations, and matching variants. `collection=exchanges`
+score) and a bounded `neighbors` summary per result; results fold into the route
+they hang off (`anchor_id`). `collection=exchanges`
 with `contains` scans full decoded source HTTP. Structural collections hold
 protocol facts only — search the structural signal, not the vulnerability name;
 vulnerability jargon is stripped with explicit `rejected_terms`. Vulnerability
@@ -215,9 +224,11 @@ engine/.venv/   auto-created on first load
 is generated, so its ground truth is known without running the engine:
 `tests/make_capture.py` writes both `tests/capture.xml` (296 items, single
 origin) and `tests/ground_truth.json` (routes, entities, identifiers, keyword
-needles, and a graded semantic query set). Each query names the collection it is
-graded against; page-content queries target `behavior`, because that is the
-collection carrying response content.
+needles, and a graded semantic query set). Queries run against `graph` and are
+graded per route, so a route node and its behavior nodes answer to the same
+reference. `tests/test_units.py` checks the pure pieces (segmentation, JavaScript
+facts, `_fit`, `build_graph`) with no Chroma or Ollama:
+`engine/.venv/bin/python tests/test_units.py`.
 
 ```bash
 ./tests/run.sh                    # all tiers against the cached import

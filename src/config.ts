@@ -55,7 +55,7 @@ export function buildConfig(options: Options): BuiltConfig {
 
   // --- Query-time (safe) ---
   const maxDistance = o.maxDistance ?? {}
-  for (const col of ["structure", "behavior", "attacks"]) {
+  for (const col of ["graph", "attacks"]) {
     const v = maxDistance[col]
     if (v == null) continue
     const n = Number(v)

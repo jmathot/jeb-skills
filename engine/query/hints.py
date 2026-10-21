@@ -11,13 +11,15 @@ Keep entries pure invocations. Explanatory text belongs in `notes`, not appended
 to the command, so a hint stays mechanically mappable to a tool call.
 """
 
+import shlex
+
 
 def _render(tool, command, args):
     parts = [tool, f'command={command}']
     for key, value in args.items():
         if value is None or value == '':
             continue
-        parts.append(f'{key}={value}')
+        parts.append(f'{key}={shlex.quote(str(value))}')
     return ' '.join(parts)
 
 

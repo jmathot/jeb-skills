@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from itertools import islice
 
-LOOKUP_COLLECTIONS = ('captures', 'exchanges', 'identifiers')
+LOOKUP_COLLECTIONS = ('captures', 'exchanges', 'identifiers', 'edges')
 LOOKUP_SCHEMA = 'jeb-observations-v1'
 PAGE_SIZE = 500
 
@@ -116,19 +116,42 @@ def sync_identifiers(client, source_collection, records, replace=False):
             delete_ids(collection, stale)
 
 
+def sync_edges(client, edges, keep=None):
+    """Upsert graph edges, then delete derived edges that are no longer wanted.
+
+    `keep` is a metadata `where` selecting edges this call does not own (finding
+    `TARGETS` edges are written separately), which reconciliation must leave alone.
+    New rows are written first, so a retry after a failure is idempotent.
+    """
+    collection = lookup_collection(client, 'edges')
+    wanted = set()
+
+    def tracked():
+        for edge in edges:
+            wanted.add(edge['id'])
+            yield edge
+
+    for batch in batches(tracked()):
+        put_records(collection, batch)
+    where = {'src_type': {'$ne': 'finding'}}
+    stale = [r['id'] for r in scan(collection, include=(), where=where) if r['id'] not in wanted]
+    delete_ids(collection, stale)
+    return len(wanted)
+
+
 def update_project(captures, **fields):
     """Project state lives in collection metadata, separate from capture history."""
     captures.modify(metadata={**(captures.metadata or {}), **fields})
 
 
 @contextmanager
-def writer_lock(db_path):
+def writer_lock(db_path, shared=False):
     """OS-released advisory lock: concurrent writers fail, crashed writers unlock."""
     import fcntl
     Path(db_path).mkdir(parents=True, exist_ok=True)
     with open(Path(db_path) / '.jeb-writer.lock', 'a') as handle:
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError('Another J.E.B. writer is active for this project.') from exc
         try:

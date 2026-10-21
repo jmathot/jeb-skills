@@ -56,23 +56,27 @@ Otherwise: `jeb_query command=map kind=endpoint` to orient, then
 
 ## The index holds structure, not vulnerabilities
 
-`structure` and `behavior` embed protocol facts only — methods, path templates,
+The `graph` collection embeds protocol facts only — methods, path templates,
 parameter names, status codes, content types, auth roles and mechanisms, cookie
-names and flags, missing security headers, CORS posture, JWT alg and claims.
+names and flags, missing security headers, CORS posture, JWT alg and claims. It
+holds typed nodes joined by stored edges (`jeb_query command=graph`):
 
-The two are not interchangeable. `structure` is the route graph: one node per
-host+method+template, carrying those protocol facts and nothing from a response
-body. `behavior` is the response layer: the same facts **plus** the distilled
-body — JSON field names, and for HTML the page title, headings, form
-method/action/field names, and visible text.
+| `node_type` | What it is |
+|---|---|
+| `route` | One node per host+method+template: protocol facts, nothing from a response body. |
+| `behavior` | The response layer under a route: the same facts **plus** the distilled body — JSON field names, and for HTML the page title, headings, form method/action/field names, and visible text. |
+| `origin` | A host's session/auth model: mechanisms, cookies set vs consumed. |
+| `data_object` | A schema seen at two or more routes — the link between readers and writers. |
+| `posture` | A set of missing headers / CORS shared by several routes. |
 
 So **to find a page by what is on it — a form, a heading, the contents of a
-table — search `collection=behavior`.** `structure` finds a route by its path,
-host, method, parameters or auth posture; it cannot find one by its content. And
-if you can already name the route, `command=endpoint` hands you its raw HTML
-without a search at all.
+table — search with `node_type=behavior`.** Route nodes find a route by its
+path, host, method, parameters or auth posture; they cannot find one by its
+content. And if you can already name the route, `command=endpoint` hands you its
+raw HTML without a search at all. To follow a relationship — which routes return
+a data object, which behaviors a route has — use `command=graph target=<id>`.
 
-Searching them for `sqli`, `xss`, `ssrf`, `idor` or `vulnerability` returns
+Searching for `sqli`, `xss`, `ssrf`, `idor` or `vulnerability` returns
 nothing useful; the tool strips such terms and tells you it did. Vulnerability
 classes exist only in `attacks`, as `vuln_class`, and only because you put them
 there with `command=record-attack`.
@@ -83,17 +87,17 @@ signal**, then reason about it (all via `jeb_query`):
 | To investigate | Query the structural signal |
 |---|---|
 | IDOR / BOLA | routes with `{id}`/`{uuid}` templates; entity links between readers and writers; then `command=identifier target=<value>` and source exchanges to inspect resource identity and account context |
-| Broken access control | `command=search collection=structure anon=true`; `access_control=open-data`; on behavior, `anon_matches_auth=true` |
-| Auth walls that only look protected | `command=search collection=structure access_control=soft-auth-wall` |
+| Broken access control | `command=search anon=true`; `access_control=open-data`; on behavior nodes, `anon_matches_auth=true` |
+| Auth walls that only look protected | `command=search access_control=soft-auth-wall` |
 | SQLi / injection | `command=search status=">=500" param=<name>`; `contains="SQLSyntax"` (also `SQLException`, `ORA-`, `syntax error`) |
-| SSRF / open redirect | `command=search param=url` (also `uri`, `redirect`, `callback`, `next`, `dest`, `target`, `webhook`, `proxy`, `fetch`, `image`, `feed`); on behavior, 3xx with a redirect location |
+| SSRF / open redirect | `command=search param=url` (also `uri`, `redirect`, `callback`, `next`, `dest`, `target`, `webhook`, `proxy`, `fetch`, `image`, `feed`); on behavior nodes, 3xx with a redirect location |
 | XSS | HTML-producing routes that take parameters and are missing CSP: `command=search missing_header=csp param=<name>` |
 | CORS | `command=search cors_open=true`; `contains="Access-Control-Allow-Origin: *"` |
 | Session / cookie handling | `command=search cookie_issues=true`; the `auth_model` node's cookie set-vs-consumed map |
 | JWT | `command=search jwt=true`, then read `alg` and the claims — `alg=none`, or a `role`/`admin` claim you can influence |
 | CSRF | state-changing methods with cookie auth whose request features lack a CSRF token |
-| Input surface (forms) | `command=search collection=behavior` on the field names you expect (`email password`, `file upload`, `query search`) — form fields are indexed with the page that renders them, not on the route node |
-| Missing hardening | `command=search collection=structure missing_header=hsts` |
+| Input surface (forms) | `command=search node_type=behavior` on the field names you expect (`email password`, `file upload`, `query search`) — form fields are indexed with the page that renders them, not on the route node |
+| Missing hardening | `command=search missing_header=hsts` |
 
 If a structural-signal search comes back empty, that is not evidence the signal
 is absent. Read `fallback` (the closest matches with the cutoff disabled) or
@@ -106,7 +110,7 @@ happened to list first. Each tier finds higher-impact bugs than the one below
 it; exhaust a tier before dropping to the next:
 
 1. **Auth boundary anomalies** — `access_control=soft-auth-wall`,
-   `anon_matches_auth=true`, `anon=true` on structure. These warrant
+   `anon_matches_auth=true`, `anon=true`. These warrant
    investigation; they do not by themselves establish an authorization failure.
 2. **IDOR / BOLA shape** — routes with `{id}`/`{uuid}` templates, especially
    ones pairing a reader and a writer over the same entity.

@@ -75,7 +75,7 @@ if ! command -v python3 >/dev/null 2>&1; then
     echo "⚠ python3 not found on PATH — the engine venv cannot be bootstrapped."
 fi
 
-MODEL="embeddinggemma:latest"
+MODEL="embeddinggemma-2:latest"
 if command -v ollama >/dev/null 2>&1; then
     if ollama list 2>/dev/null | grep -q "${MODEL%%:*}"; then
         echo "✓ Ollama model $MODEL present"

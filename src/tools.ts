@@ -4,7 +4,7 @@ import { importScript, queryScript, visualizeScript } from "./paths.js"
 
 // The engine keeps the original CLI's command tree. We expose it as OpenCode tools
 // under the `jeb` namespace, preserving that shape:
-//   jeb query  <endpoint|map|search|get|similar|identifier|evidence|attacks|record-attack>
+//   jeb query  <endpoint|map|search|get|similar|identifier|evidence|graph|attacks|record-attack>
 //   jeb import <import|rebuild|status|abandon|export>
 //   jeb visualize
 // Each dispatcher takes a `command` selector plus the arguments for that command,
@@ -27,6 +27,7 @@ const QUERY_POSITIONALS: Record<string, string[]> = {
   similar: ["target"],
   identifier: ["target"],
   evidence: ["target"],
+  graph: ["target"],
   search: ["text"],
   map: [],
   attacks: [],
@@ -41,24 +42,55 @@ const IMPORT_POSITIONALS: Record<string, string[]> = {
   export: ["project_dir"],
 }
 
+// Input keys each subcommand's argparse parser accepts (besides its positionals).
+// Anything else is rejected up front instead of surfacing as argparse usage text.
+const LIST_FILTERS = [
+  "offset", "method", "status", "kind", "access_control", "access_class", "contains", "where",
+  "vuln_class", "verdict", "severity", "anon", "auth", "cors_open", "include_static",
+  "anon_matches_auth", "cookie_issues", "jwt", "param", "cookie", "missing_header",
+]
+const QUERY_FLAGS: Record<string, string[]> = {
+  endpoint: ["db_path", "depth", "limit", "host", "path", "method", "no_raw", "raw_chars"],
+  map: ["db_path", "depth", "limit", "host", "path", "node_type", ...LIST_FILTERS],
+  search: ["db_path", "depth", "limit", "host", "path", "collection", "node_type", "loose", ...LIST_FILTERS],
+  get: ["db_path", "collection", "original"],
+  similar: ["db_path", "collection", "depth", "limit", "host", "path"],
+  identifier: ["db_path", "offset", "limit"],
+  evidence: ["db_path", "offset", "limit", "signal"],
+  graph: ["db_path", "limit", "rel", "direction", "hops"],
+  attacks: ["db_path", "depth", "limit", "host", "path", ...LIST_FILTERS],
+  "record-attack": [
+    "db_path", "event_id", "vuln_class", "endpoint", "method", "param", "payload", "status", "severity",
+    "source_id", "evidence", "tool", "request", "request_file", "response", "response_file", "verdict",
+  ],
+}
+
+const IMPORT_FLAGS: Record<string, string[]> = {
+  import: ["auth_cookies", "auto_detect", "rebuild"],
+  rebuild: ["auth_cookies", "auto_detect", "rebuild"],
+  status: [],
+  abandon: [],
+  export: ["collection", "output"],
+}
+
 interface BuildOpts {
   positionals: string[]
+  allowed?: string[]
   flagOverrides?: Record<string, string>
   paired?: Record<string, [string, string]>
 }
 
-function buildArgv(input: Record<string, any>, opts: BuildOpts): string[] {
+export function buildArgv(input: Record<string, any>, opts: BuildOpts): string[] {
   const argv: string[] = []
   const used = new Set<string>(opts.positionals)
   used.add("command")
-
-  for (const key of opts.positionals) {
-    const value = input[key]
-    if (value !== undefined && value !== null && value !== "") argv.push(String(value))
-  }
+  const allowed = opts.allowed && new Set(opts.allowed)
 
   for (const [key, value] of Object.entries(input)) {
     if (used.has(key) || value === undefined || value === null || value === "") continue
+    if (allowed && !allowed.has(key)) {
+      throw new Error(`"${key}" does not apply to command "${input.command}"`)
+    }
     const paired = opts.paired?.[key]
     if (paired) {
       argv.push(value ? paired[0] : paired[1])
@@ -75,6 +107,13 @@ function buildArgv(input: Record<string, any>, opts: BuildOpts): string[] {
     }
     argv.push(flag, String(value))
   }
+
+  // Positionals go last behind `--` so a value starting with "-" is never read as a flag.
+  const positionals = opts.positionals
+    .map((key) => input[key])
+    .filter((value) => value !== undefined && value !== null && value !== "")
+    .map(String)
+  if (positionals.length) argv.push("--", ...positionals)
   return argv
 }
 
@@ -92,8 +131,11 @@ export async function registerTools(
   ): Promise<{ content: string }> => {
     try {
       const res = await runEngine({ python, script, argv, cwd, env, signal: context.signal })
-      const text = res.stdout.trim() || res.stderr.trim() || `(no output; exit code ${res.code})`
-      return { content: text }
+      const out = res.stdout.trim()
+      const err = res.stderr.trim()
+      if (res.code === 0 && out) return { content: out }
+      // Failures keep both streams: the engine's JSON error is on stdout, tracebacks on stderr.
+      return { content: [out, err, `(exit code ${res.code})`].filter(Boolean).join("\n") }
     } catch (err) {
       return { content: JSON.stringify({ error: `could not run engine: ${(err as Error).message}` }) }
     }
@@ -112,12 +154,13 @@ export async function registerTools(
       description: [
         "Investigate an imported capture. Set `command`, then the fields for it:",
         "- endpoint: target (path or full URL). The first move for any named route; also host/path/method/depth/limit/no_raw/raw_chars.",
-        "- map: list the app; kind/limit/offset and any filters. Scope with kind=endpoint, then kind=auth_model.",
-        "- search: text (concepts) and/or filters; collection (structure|behavior|attacks|exchanges), depth, loose.",
+        "- map: list the app's routes, origins and data objects; kind/node_type/limit/offset and any filters. Scope with kind=endpoint, then kind=auth_model.",
+        "- search: text (concepts) and/or filters; collection (graph|attacks|exchanges), node_type (route|behavior|origin|data_object|posture|section|form), depth, loose.",
+        "- graph: target (any graph node id). Edges around it: rel, direction (out|in|both), hops (1-2), limit.",
         "- get: target (document or exchange id); original=true adds raw HTTP base64.",
         "- similar: target (semantic document id).",
         "- identifier: target (exact value); offset/limit.",
-        "- evidence: target (behavior id); signal (content|schema), offset/limit.",
+        "- evidence: target (behavior node id); signal (content|schema), offset/limit.",
         "- attacks: list recorded findings; vuln_class/verdict/severity, offset/limit.",
         "- record-attack: save a finding; requires vuln_class and endpoint; method/param/payload/status/verdict/evidence/source_id/request/response/event_id.",
         "Returns one JSON object (with a `next` hint of follow-up commands). Structural collections hold protocol facts, not vulnerability labels — search the signal, not the bug name.",
@@ -128,12 +171,16 @@ export async function registerTools(
         required: ["command"],
         properties: {
           command: enumStr(
-            ["endpoint", "map", "search", "get", "similar", "identifier", "evidence", "attacks", "record-attack"],
+            ["endpoint", "map", "search", "get", "similar", "identifier", "evidence", "graph", "attacks", "record-attack"],
             "Which query subcommand to run.",
           ),
           target: str("Positional argument for endpoint/get/similar/identifier/evidence (path, URL, or id)."),
           text: str("Search concepts (search command). Use structural language, not vulnerability jargon."),
-          collection: enumStr(["structure", "behavior", "attacks", "exchanges"], "Semantic scope (`--in`) for search/get; similar/get resolve ids. exchanges = full decoded source HTTP."),
+          collection: enumStr(["graph", "attacks", "exchanges"], "Semantic scope (`--in`) for search/get; similar/get resolve ids. exchanges = full decoded source HTTP."),
+          node_type: enumStr(["origin", "route", "behavior", "section", "form", "data_object", "posture"], "Restrict to one graph node type (map/search). Default: map lists routes, origins and data objects; search covers every node."),
+          rel: enumStr(["HAS_ROUTE", "CHILD_OF", "HAS_BEHAVIOR", "RETURNS", "ACCEPTS", "CONTAINS", "LINKS_TO", "SUBMITS_TO", "HAS_FIELD", "CALLS", "LOADS", "HAS_POSTURE", "SETS_COOKIE", "SENDS_COOKIE", "USES_LIB", "RELATED", "OBSERVED_IN", "TARGETS"], "Edge relation filter (graph)."),
+          direction: enumStr(["out", "in", "both"], "Edge direction relative to the target (graph; default both)."),
+          hops: int("Edge hops to follow, 1 or 2 (graph)."),
           depth: enumStr(["quick", "normal", "deep"], "Retrieval budget preset (default normal)."),
           limit: int("Maximum results."),
           offset: int("Listing offset (metadata listings without query text)."),
@@ -144,7 +191,7 @@ export async function registerTools(
           param: strArr("Require parameter name(s) (record-attack: the tested parameter)."),
           cookie: strArr("Require cookie name(s) (exact, case-sensitive)."),
           missing_header: strArr("Require security header(s) to be absent, e.g. csp, hsts."),
-          kind: str("Node kind: endpoint, auth_model, entity."),
+          kind: str("Node kind: page, endpoint, action, auth_model (origin), entity (data object), posture."),
           access_control: str("Access-control signal, e.g. open-data, soft-auth-wall."),
           access_class: str("Access classification facet."),
           contains: str("Case-sensitive literal substring (previews, or full source with collection=exchanges)."),
@@ -179,8 +226,17 @@ export async function registerTools(
       },
       execute: async (input: any, context) => {
         const command = String(input.command)
-        const argv = [command, ...buildArgv(input, { positionals: QUERY_POSITIONALS[command] ?? [], flagOverrides: { collection: "--in" } })]
-        return call(queryScript, argv, context)
+        if (!(command in QUERY_FLAGS)) return { content: JSON.stringify({ error: `unknown query command: ${command}` }) }
+        try {
+          const argv = [command, ...buildArgv(input, {
+            positionals: QUERY_POSITIONALS[command],
+            allowed: QUERY_FLAGS[command],
+            flagOverrides: { collection: "--in" },
+          })]
+          return call(queryScript, argv, context)
+        } catch (err) {
+          return { content: JSON.stringify({ error: (err as Error).message }) }
+        }
       },
     })
 
@@ -209,20 +265,26 @@ export async function registerTools(
           auth_cookies: strArr("Additional recognized credential cookie names (import). Replaces custom names for the whole corpus."),
           auto_detect: bool("Enable/disable origin-scoped login-cookie learning (import). Omit to inherit the saved setting."),
           rebuild: bool("Force derived index rebuild during import even if versions match."),
-          collection: enumStr(["structure", "behavior", "attacks", "captures", "exchanges", "identifiers"], "Collection to export (export command)."),
+          collection: enumStr(["graph", "attacks", "captures", "exchanges", "identifiers", "edges"], "Collection to export (export command)."),
           output: str("NDJSON destination path; must not already exist (export command)."),
         },
       },
       execute: async (input: any, context) => {
         const command = String(input.command)
-        const argv = [
-          command,
-          ...buildArgv(input, {
-            positionals: IMPORT_POSITIONALS[command] ?? [],
-            paired: { auto_detect: ["--auto-detect-auth-cookies", "--no-auto-detect-auth-cookies"] },
-          }),
-        ]
-        return call(importScript, argv, context)
+        if (!(command in IMPORT_FLAGS)) return { content: JSON.stringify({ error: `unknown import command: ${command}` }) }
+        try {
+          const argv = [
+            command,
+            ...buildArgv(input, {
+              positionals: IMPORT_POSITIONALS[command],
+              allowed: IMPORT_FLAGS[command],
+              paired: { auto_detect: ["--auto-detect-auth-cookies", "--no-auto-detect-auth-cookies"] },
+            }),
+          ]
+          return call(importScript, argv, context)
+        } catch (err) {
+          return { content: JSON.stringify({ error: (err as Error).message }) }
+        }
       },
     })
 

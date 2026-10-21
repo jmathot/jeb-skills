@@ -69,7 +69,7 @@ export async function bootstrap(ctx: Plugin.Context, pythonBin = "python3"): Pro
 }
 
 async function warnIfOllamaMissing(options: Record<string, any> | undefined): Promise<void> {
-  const model = (options?.embeddingModel as string) || "embeddinggemma:latest"
+  const model = (options?.embeddingModel as string) || "embeddinggemma-2:latest"
   const base = model.split(":")[0]
   const { code, stdout } = await capture("ollama", ["list"])
   if (code !== 0) {

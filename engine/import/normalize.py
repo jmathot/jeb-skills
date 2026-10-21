@@ -203,10 +203,16 @@ def pass_c_boilerplate(annotated):
 def pass_d_distill(annotated, boilerplate):
     for a in annotated:
         respf = d.response_features(a['_resp_headers'], a.get('_req_origin', ''))
+        page_origin = format_origin(a)
+        host_boilerplate = boilerplate.get((a['scheme'], a['host'], a['port']), set())
         distilled, schema_sig, schema_keys = d.distill_response(
             a['resp_class'], a['_resp_body'], a['resp_content_type'],
-             respf['redirect_location'], boilerplate.get(
-                 (a['scheme'], a['host'], a['port']), set()))
+             respf['redirect_location'], host_boilerplate, page_origin)
+        # Graph facts: segmented page content, or a JavaScript bundle's endpoints.
+        if a['resp_class'] in ('html_document', 'spa_shell') and a['_resp_body']:
+            a['page'] = d.page_facts(a['_resp_body'], host_boilerplate)
+        elif a['resp_class'] == 'static_asset' and d.is_javascript(a['resp_content_type']) and a['_resp_body']:
+            a['js'] = d.jsfacts.compact(d.jsfacts.js_facts(a['_resp_body'], page_origin))
         a['resp_features'] = respf
         a['resp_distilled'] = distilled
         a['resp_schema_sig'] = schema_sig
@@ -299,6 +305,8 @@ def _access_class(a, login_fps):
     if rc == 'redirect':
         loc = d.header_get(a.get('_resp_headers', {}), 'location')
         return 'auth_wall' if d.login_redirect(loc) else 'redirect'
+    if a.get('is_static') and 200 <= sc < 300 and rc not in ('spa_shell', 'empty'):
+        return 'static'
     if rc == 'spa_shell':
         return 'shell'
     if rc == 'empty':

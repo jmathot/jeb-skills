@@ -8,20 +8,21 @@ import sys
 from urllib.parse import urlparse
 
 import chromadb
-import build_behavior
-import build_structure
+import build_graph
 import distill as d
+from ontology import ONTOLOGY_VERSION
 from embedding import embedding_profile, make_ollama_ef
 from parse import hydrate_item, iter_items, storable
 from storage import (LOOKUP_COLLECTIONS, batches, digest, lookup_collection, put_records,
-                     scan, delete_ids, sync_identifiers, writer_lock, update_project)
+                     scan, delete_ids, sync_edges, sync_identifiers, writer_lock, update_project)
 from streaming import (FEATURE_VERSION, IDENTIFIER_VERSION, LOAD_BATCH, PARSER_VERSION,
                        extract_features, identifier_pairs, annotate_features, hydrate_chunks)
 from vector_store import semantic_collection, store
 
 # The embedded collections, mirroring COLLECTIONS in engine/query/agent_interface.py;
 # the other three are storage.LOOKUP_COLLECTIONS and are never embedded.
-EMBEDDED_COLLECTIONS = ('structure', 'behavior', 'attacks')
+EMBEDDED_COLLECTIONS = ('graph', 'attacks')
+LEGACY_COLLECTIONS = ('structure', 'behavior')
 
 
 def source_digest(path):
@@ -156,10 +157,10 @@ def ingest(client, captures, xml_file, config):
                     'identifier_version': IDENTIFIER_VERSION}, 'document': json.dumps(storable(item))})
                 pairs.append(identifier_pairs(item))
                 count += 1
-            put_records(exchanges, records)
             sync_identifiers(client, 'exchanges', ({'id': r['id'], 'capture_id': capture_id,
                 'identifier_pairs': pr} for r, pr in zip(records, pairs)),
                 replace=not fresh)
+            put_records(exchanges, records)
         if not fresh:
             # Parser upgrades can change the number of retained records.
             stale = [r['id'] for r in scan(exchanges, where={'capture_id': capture_id})
@@ -198,14 +199,14 @@ def rebuild_project(client, captures, config, force=False):
     exchanges = lookup_collection(client, 'exchanges')
     ef = make_ollama_ef()
     profile = embedding_profile(ef)
-    version = digest([config, FEATURE_VERSION, IDENTIFIER_VERSION, profile])
+    version = digest([config, FEATURE_VERSION, IDENTIFIER_VERSION, ONTOLOGY_VERSION, profile])
     names = {c.name for c in client.list_collections()}
     if 'attacks_rebuild_backup' in names:
         force = True
     identifiers_missing = 'identifiers' not in names
-    profiles_ok = {'structure', 'behavior', 'identifiers'} <= names and all(
+    profiles_ok = {'graph', 'edges', 'identifiers'} <= names and not set(LEGACY_COLLECTIONS) & names and all(
         all((c.metadata or {}).get(k) == v for k, v in profile.items())
-        for c in client.list_collections() if c.name in ('structure', 'behavior', 'attacks'))
+        for c in client.list_collections() if c.name in EMBEDDED_COLLECTIONS)
     if not force and profiles_ok and (captures.metadata or {}).get('index_state') == 'complete' \
             and (captures.metadata or {}).get('index_version') == version:
         print('Project indexes are current.')
@@ -213,7 +214,6 @@ def rebuild_project(client, captures, config, force=False):
         repair_identifiers(client)
         return
     update_project(captures, index_state='building', index_error='')
-    d.ledger_reset()
     try:
         allowed = sorted(r['id'] for r in scan(captures)
                          if r['metadatas'].get('state') in ('ready', 'complete', 'indexing'))
@@ -289,22 +289,16 @@ def rebuild_project(client, captures, config, force=False):
         if identifiers_missing:
             from findings import repair_identifiers
             repair_identifiers(client, force=True)
-        nodes = build_structure.build_endpoint_nodes(annotated)
-        entities, entity_of = build_structure.build_entities(nodes)
-        def structure_chunks():
-            yield from (build_structure.endpoint_chunk(n, entity_of) for n in nodes)
-            yield from (build_structure.auth_model_chunk(o, m) for o, m in models.items())
-            yield from (build_structure.entity_chunk(e, entity_of[e['schema_sig']]) for e in entities)
-            yield from build_structure.build_segments(nodes, models, entity_of, entities)
-        store(semantic_collection(client, 'structure', ef, True), structure_chunks(), ef, reconcile=True)
-        del nodes, entities, entity_of
-        def behavior_chunks():
-            parents = build_behavior.build(annotated)
-            yield from parents
-            yield from build_behavior.build_segments(annotated, parents)
-            yield from build_behavior.build_variants(annotated)
-        store(semantic_collection(client, 'behavior', ef, True),
-              hydrate_chunks(behavior_chunks(), load_many), ef, reconcile=True)
+        chunks, edges = build_graph.build_graph(annotated, models)
+        store(semantic_collection(client, 'graph', ef, True),
+              hydrate_chunks(chunks, load_many), ef, reconcile=True)
+        sync_edges(client, edges)
+        del chunks, edges
+        for legacy in LEGACY_COLLECTIONS:
+            if legacy in names:
+                client.delete_collection(legacy)
+        from findings import sync_finding_edges
+        sync_finding_edges(client)
         ledger = loss_ledger(annotated)
         update_project(captures, index_state='complete', index_version=version, index_error='',
                        loss_ledger=json.dumps(ledger, sort_keys=True))
@@ -345,7 +339,8 @@ def main():
     db_path = str(Path(args.project_dir).resolve() / 'chroma_db')
     if args.command != 'import' and not Path(db_path).is_dir():
         parser.error('Project database does not exist.')
-    with writer_lock(db_path):
+    with writer_lock(db_path, shared=args.command in ('status', 'export')):
+        d.ledger_reset()
         client = chromadb.PersistentClient(path=db_path)
         captures = lookup_collection(client, 'captures')
         if args.command == 'status':

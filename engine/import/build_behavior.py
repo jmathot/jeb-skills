@@ -1,15 +1,12 @@
 """
-J.E.B. v2 — Phase 3a: build the `behavior` collection.
+Behavior grouping helpers for `build_graph`.
 
-Collapses annotated items to *distinct behaviors* (one doc per
-method+template+status+auth-role+response-schema) and emits, per doc:
-  embed_text   distilled, value-suppressed request/response + security clause
-  page_content raw HTTP of the representative (+ collapsed example URLs)
-  metadata     lean functional scalars + compact security features
+Annotated items collapse to *distinct behaviors* (method + template + status +
+auth role + access class + credential presence). The group's most informative
+exchange is its representative; its differing responses are variants, recorded as
+`OBSERVED_IN` edges rather than embedded records.
 """
-import argparse
 import json
-import os
 from collections import OrderedDict
 
 import distill as d
@@ -38,9 +35,9 @@ def _variant_groups(items):
     return groups
 
 
-# Variants beneath one behavior parent that are embedded and kept as records. Every
-# variant is still an exchange in `exchanges`; this only bounds how many become
-# separate vectors when a response differs in nearly every instance.
+# Variants beneath one behavior that get an `OBSERVED_IN` edge. Every variant is
+# still an exchange in `exchanges`; this only bounds the edges when a response
+# differs in nearly every instance.
 MAX_VARIANTS_PER_PARENT = 12
 
 
@@ -58,10 +55,9 @@ def _variant_id(parent_id, key):
     return d.md5(parent_id + '|variant|' + json.dumps(key, sort_keys=True))
 
 
-def _parent_metadata(rep, items, variant_count, variant_ids):
-    """Metadata of one behavior record, derived from its representative and the
-    exchanges collapsed beneath it. Shared by parents, segments and variants so
-    none of them rebuilds a whole record just to read this back."""
+def _parent_metadata(rep, items, variant_count):
+    """Metadata of one behavior node, derived from its representative and the
+    exchanges collapsed beneath it."""
     reqf, respf = rep['req_features'], rep['resp_features']
     return {
         'evidence_count': len(items),
@@ -112,8 +108,6 @@ def _parent_metadata(rep, items, variant_count, variant_ids):
         'req_body_truncated': rep.get('req_body_truncated', False),
         'resp_decode_error': rep.get('resp_decode_error', ''),
         'variant_count': variant_count,
-        'variant_ids': _csv(variant_ids),
-        'granularity': 'parent',
         'summary': d.behavior_summary(rep),
     }
 
@@ -123,123 +117,4 @@ def _group_metadata(items):
     groups = _variant_groups(items)
     selected = _selected_variants(items)
     parent_id = d.behavior_id(rep)
-    variant_ids = ([_variant_id(parent_id, key) for key in selected]
-                   if len(groups) > 1 else [])
-    return rep, parent_id, _parent_metadata(rep, items, len(groups), variant_ids), groups, selected
-
-
-def build(annotated):
-    groups = OrderedDict()
-    for a in annotated:
-        key = d.behavior_collapse_key(a)
-        groups.setdefault(key, []).append(a)
-
-    chunks = []
-    for key, items in groups.items():
-        rep, parent_id, metadata, variant_groups, selected = _group_metadata(items)
-        d.LEDGER['behavior.parents'] += 1
-        if len(variant_groups) > 1:
-            d.LEDGER['behavior.parents_with_variants'] += 1
-            d.LEDGER['behavior.variants_emitted'] += len(selected)
-            d.LEDGER['behavior.variants_dropped_by_cap'] += len(variant_groups) - len(selected)
-        example_urls = list(OrderedDict.fromkeys(i['url'] for i in items))[:5]
-        instance_count = len(items)
-
-        page_content = rep['raw']
-        if instance_count > 1:
-            page_content += (f"\n\n--- COLLAPSED: {instance_count} instances; "
-                             f"examples ---\n" + "\n".join(example_urls))
-
-        chunks.append({'id': parent_id, 'embed_text': d.behavior_embed_text(rep),
-                       'embedding_title': rep.get('page_title', ''),
-                       'page_content': page_content, 'metadata': metadata})
-    return chunks
-
-
-def build_segments(annotated, parents=None):
-    groups = OrderedDict()
-    for a in annotated:
-        groups.setdefault(d.behavior_collapse_key(a), []).append(a)
-
-    chunks = []
-    parent_metadata = {p['id']: p['metadata'] for p in (parents or [])}
-    for items in groups.values():
-        rep = _representative(items)
-        parent_id = d.behavior_id(rep)
-        parent_meta = parent_metadata.get(parent_id) or _group_metadata(items)[2]
-        rep = dict(rep, anon_matches_auth=parent_meta['anon_matches_auth'])
-        for representation, text in d.behavior_segment_texts(rep).items():
-            metadata = segment_metadata(parent_meta)
-            metadata.update({'parent_id': parent_id, 'representation': representation,
-                             'granularity': 'segment'})
-            chunks.append({
-                'id': d.md5(f"{parent_id}|{representation}"),
-                'embed_text': text,
-                'embedding_title': rep.get('page_title', ''),
-                'page_content': text,
-                'metadata': metadata,
-            })
-    return chunks
-
-
-def build_variants(annotated):
-    groups = OrderedDict()
-    for a in annotated:
-        groups.setdefault(d.behavior_collapse_key(a), []).append(a)
-
-    chunks = []
-    for items in groups.values():
-        if len(_variant_groups(items)) <= 1:
-            continue
-        parent_id = d.behavior_id(_representative(items))
-        for key, variant_items in _selected_variants(items).items():
-            rep = _representative(variant_items)
-            metadata = _parent_metadata(rep, variant_items, 1, [])
-            metadata.update({
-                'parent_id': parent_id,
-                'representation': 'variant',
-                'granularity': 'variant',
-            })
-            chunks.append({
-                'id': _variant_id(parent_id, key),
-                'embed_text': d.behavior_embed_text(rep),
-                'embedding_title': rep.get('page_title', ''),
-                'page_content': rep['raw'],
-                'metadata': metadata,
-            })
-    return chunks
-
-
-def segment_metadata(meta):
-    """Searchable scalar facets, without aggregate evidence/variant payloads."""
-    excluded = {'evidence_ids', 'variant_ids', 'summary', 'resp_body_sha256',
-                'exchange_id', 'capture_id', 'time', 'example_ids', 'entity_ids',
-                'produced_by', 'consumed_by'}
-    return {k: v for k, v in meta.items() if k not in excluded and not k.startswith('_')}
-
-
-def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v3 Phase 3a: build behavior docs")
-    ap.add_argument('input_file', nargs='?', default='annotated_traffic.json')
-    ap.add_argument('-o', '--output', required=True, help='explicit export destination')
-    args = ap.parse_args()
-
-    with open(args.input_file) as f:
-        data = json.load(f)
-    annotated = data['items'] if isinstance(data, dict) else data
-
-    chunks = build(annotated)
-    n_parents = len(chunks)
-    chunks += build_segments(annotated)
-    n_segments = len(chunks) - n_parents
-    chunks += build_variants(annotated)
-
-    with open(args.output, 'w') as f:
-        json.dump(chunks, f, indent=2)
-    print(f"Built {n_parents} canonical behavior docs + {n_segments} semantic "
-          f"segments + {len(chunks) - n_parents - n_segments} raw variants. "
-          f"Saved to {args.output}")
-
-
-if __name__ == '__main__':
-    main()
+    return rep, parent_id, _parent_metadata(rep, items, len(groups)), groups, selected

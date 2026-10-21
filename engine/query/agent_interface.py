@@ -13,6 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.normpath(os.path.join(HERE, '../import')))
 from embedding import EMBEDDING_PROFILE_METADATA, embed_documents, make_ollama_ef, embedding_profile
 import distill as d
+import ontology
 from storage import (LOOKUP_COLLECTIONS, batches, scan, sync_identifiers,
                      writer_lock, digest)
 from findings import finding_document, parse_finding, pairs_for_finding
@@ -39,12 +40,12 @@ def screen_query(text, collection):
     rejected = [m.group() for m in VULN_RE.finditer(text)]
     return re.sub(r'\s+', ' ', VULN_RE.sub(' ', text)).strip(' ,;-'), rejected
 
-COLLECTIONS = ('structure', 'behavior', 'attacks')
+COLLECTIONS = ('graph', 'attacks')
 ADDRESSABLE = COLLECTIONS + ('exchanges',)
 _DEPTH_BASE = {
     'quick': dict(candidate_k=20, n_results=5, max_per_endpoint=1, snippet_len=120, raw_chars=0),
-    'normal': dict(candidate_k=40, n_results=8, max_per_endpoint=2, snippet_len=200, raw_chars=2000),
-    'deep': dict(candidate_k=120, n_results=25, max_per_endpoint=4, snippet_len=400, raw_chars=8000),
+    'normal': dict(candidate_k=40, n_results=8, max_per_endpoint=1, snippet_len=200, raw_chars=2000),
+    'deep': dict(candidate_k=120, n_results=25, max_per_endpoint=2, snippet_len=400, raw_chars=8000),
 }
 
 
@@ -68,7 +69,7 @@ class MissingCollection(ValueError):
 
 
 class JebAgent:
-    def __init__(self, db_path='./chroma_db', collection_name='behavior', create_if_missing=False):
+    def __init__(self, db_path='./chroma_db', collection_name='graph', create_if_missing=False):
         self.db_path = os.path.abspath(db_path)
         self.collection_name = collection_name
         if not create_if_missing and not os.path.isdir(self.db_path):
@@ -92,7 +93,6 @@ class JebAgent:
                 else self.ollama_ef)
         if collection_name in COLLECTIONS:
             self._validate(self.collection)
-        self.has_segments = collection_name in ('structure', 'behavior')
 
     def _validate(self, collection):
         if any((collection.metadata or {}).get(k) != v
@@ -117,10 +117,28 @@ class JebAgent:
 
     def parent_index(self, refresh=False):
         if self._parent_index_cache is None or refresh:
-            kwargs = {'where': {'granularity': 'parent'}} if self.has_segments else {}
+            kwargs = {'where': {'node_type': {'$in': list(ontology.STRUCTURAL_TYPES)}}} \
+                if self.collection_name == 'graph' else {}
             self._parent_index_cache = [(r['id'], r['metadatas'] or {})
                                         for r in scan(self.collection, **kwargs)]
         return self._parent_index_cache
+
+    def neighbors(self, ids, rel=None, direction='out', limit=500):
+        """One hop over the stored edges: [(edge metadata)], never traversing further."""
+        col = self.sibling('edges')
+        ids = [i for i in dict.fromkeys(ids) if i]
+        if col is None or not ids:
+            return []
+        rows = []
+        for side in (('src',) if direction == 'out' else ('dst',) if direction == 'in' else ('src', 'dst')):
+            for start in range(0, len(ids), 200):
+                clauses = [{side: {'$in': ids[start:start + 200]}}]
+                if rel:
+                    clauses.append({'rel': rel})
+                rows += [r['metadatas'] for r in scan(
+                    col, where={'$and': clauses} if len(clauses) > 1 else clauses[0])]
+        unique = {(m['src'], m['rel'], m['dst']): m for m in rows}
+        return sorted(unique.values(), key=lambda m: (m['rel'], m.get('ord', 0), m['src'], m['dst']))[:limit]
 
     def get_many(self, ids, collection_name=None, include=('metadatas',)):
         col = self.collection if collection_name is None else self.sibling(collection_name)
@@ -158,29 +176,17 @@ class JebAgent:
 
     def filter(self, where=None, where_document=None, n_results=8, snippet_len=200,
                post=None, sort_key=None, reverse=False, offset=0):
-        effective = self._and_where(where, {'granularity': 'parent'}) if self.has_segments else where
         kwargs = {}
-        if effective:
-            kwargs['where'] = effective
+        if where:
+            kwargs['where'] = where
         if where_document:
             kwargs['where_document'] = where_document
         rows = {r['id']: r['metadatas'] or {} for r in scan(self.collection, **kwargs)
                 if all(p(r['metadatas'] or {}) for p in (post or []))}
-        matched = {}
-        if self.collection_name == 'behavior' and (where or where_document or post):
-            kwargs['where'] = self._and_where(where, {'granularity': 'variant'})
-            for row in scan(self.collection, **kwargs):
-                meta = row['metadatas'] or {}
-                if all(p(meta) for p in (post or [])):
-                    matched.setdefault(meta['parent_id'], []).append(row['id'])
-            rows.update({i: r['metadata'] for i, r in self.get_many(matched).items()})
         key = sort_key or (lambda row: (-int(row[1].get('instance_count', 0)), row[0]))
         ordered = sorted(rows.items(), key=key, reverse=reverse)
         results = [self._summarize(i, m, snippet_len=snippet_len)
                    for i, m in ordered[offset:offset + max(1, n_results)]]
-        for result in results:
-            if result['id'] in matched:
-                result['matched_variants'] = matched[result['id']]
         return {'results': results, 'total': len(rows), 'complete': True,
                 'offset': offset, 'has_more': len(rows) > offset + len(results)}
 
@@ -209,8 +215,7 @@ class JebAgent:
         seed = self.collection.get(ids=[doc_id], include=['embeddings'])
         if not seed['ids']:
             return {'results': []}
-        effective = self._and_where(where, {'granularity': 'parent'}) if self.has_segments else where
-        kwargs = {'where': effective} if effective else {}
+        kwargs = {'where': where} if where else {}
         found = self.collection.query(query_embeddings=[seed['embeddings'][0]],
                                       n_results=max(n_results * 4, 40),
                                       include=['metadatas', 'distances'], **kwargs)
@@ -305,6 +310,11 @@ class JebAgent:
                               'identifier_pairs': pairs_for_finding(data)}], replace=True)
             self.collection.update(ids=[doc_id], metadatas=[{'identifier_state': 'complete',
                                                               'identifier_version': IDENTIFIER_VERSION}])
+            try:
+                from findings import sync_finding_edges
+                sync_finding_edges(self.client, only=[doc_id])
+            except Exception:
+                pass  # a rebuild re-derives every TARGETS edge
             return {'recorded': doc_id, 'summary': meta['summary'], 'identifier_state': 'complete'}
         except Exception as exc:
             return {'recorded': doc_id, 'summary': meta['summary'], 'identifier_state': 'pending',
@@ -335,10 +345,6 @@ def build_where(args, collection):
                        'severity', 'verdict', 'vuln_class')
     else:
         unsupported = ('vuln_class', 'verdict', 'severity')
-        if collection == 'structure':
-            unsupported += ('access_class', 'anon_matches_auth', 'cookie_issues', 'jwt')
-        else:
-            unsupported += ('kind', 'access_control')
     for flag in unsupported:
         if getattr(args, flag, None):
             raise ValueError(f'--{flag.replace("_", "-")} is not supported for {collection}.')
@@ -347,23 +353,30 @@ def build_where(args, collection):
                         ('access_class', 'access_class'), ('vuln_class', 'vuln_class'),
                         ('verdict', 'verdict'), ('severity', 'severity')]:
         if getattr(args, name, None):
-            clauses.append({field: getattr(args, name)})
+            clauses.append({field: getattr(args, name).lower() if name == 'host' else getattr(args, name)})
     if getattr(args, 'method', None):
         methods = args.method if isinstance(args.method, list) else [args.method]
         clauses.append({'method': {'$in': [m.upper() for m in methods]}})
+    if getattr(args, 'node_type', None):
+        if args.node_type not in ontology.EMBEDDED_TYPES:
+            raise ValueError(f'--node-type must be one of {", ".join(ontology.EMBEDDED_TYPES)}.')
+        clauses.append({'node_type': args.node_type})
+    elif collection == 'graph' and args.command == 'map':
+        # `map` lists the app's structure; behaviors and page content are reached by search.
+        clauses.append({'node_type': {'$in': list(ontology.STRUCTURAL_TYPES)}})
     if getattr(args, 'status', None):
-        if collection == 'structure':
-            raise ValueError('--status applies to behavior or attacks.')
         clauses.append(_status_clause(args.status))
     if getattr(args, 'anon', False):
-        clauses.append({'anon_allowed': True} if collection == 'structure' else {'credential_present': False})
+        clauses.append({'$or': [{'anon_allowed': True}, {'credential_present': False}]}
+                       if collection == 'graph' else {'credential_present': False})
     if getattr(args, 'auth', False):
-        clauses.append({'authenticated_ever': True} if collection == 'structure' else {'credential_present': True})
+        clauses.append({'$or': [{'authenticated_ever': True}, {'credential_present': True}]}
+                       if collection == 'graph' else {'credential_present': True})
     if getattr(args, 'anon_matches_auth', False):
         clauses.append({'anon_matches_auth': True})
     if getattr(args, 'cors_open', False):
         clauses.append({'cors': {'$in': ['*', 'null', '* creds', 'null creds']}})
-    if collection in ('structure', 'behavior') and not getattr(args, 'include_static', False):
+    if collection == 'graph' and not getattr(args, 'include_static', False):
         clauses.append({'is_static': False})
     if getattr(args, 'where', None):
         clauses.append(json.loads(args.where))
@@ -410,6 +423,43 @@ def resolve_collection(db_path, doc_id):
     return None
 
 
+def _get_hints(doc, target, collection):
+    if collection not in COLLECTIONS:
+        return []
+    node_type = ((doc or {}).get('metadata') or {}).get('node_type')
+    steps = [hints.query('similar', target=target)]
+    if node_type == ontology.BEHAVIOR:
+        steps.insert(0, hints.query('evidence', target=target))
+    if collection == 'graph':
+        steps.append(hints.query('graph', target=target))
+    return steps
+
+
+def graph_view(agent, target, rel=None, direction='both', depth=1, limit=50):
+    """Edges around one node, breadth-first to `depth` hops, with node labels."""
+    depth = max(1, min(int(depth), 2))
+    seen, frontier, edges = {target}, [target], []
+    for _ in range(depth):
+        hop = agent.neighbors(frontier, rel=rel, direction=direction, limit=limit * 4)
+        edges += [m for m in hop if m not in edges]
+        frontier = [i for m in hop for i in (m['src'], m['dst']) if i not in seen]
+        seen.update(frontier)
+        if not frontier or len(edges) >= limit:
+            break
+    edges = edges[:limit]
+    ids = {i for m in edges for i in (m['src'], m['dst'])} | {target}
+    nodes = agent.get_many(sorted(ids))
+    label = lambda i: ({'id': i, **{k: nodes[i]['metadata'].get(k, '') for k in
+                                    ('node_type', 'method', 'scheme', 'host', 'port', 'endpoint_template', 'summary') if nodes[i]['metadata'].get(k, '') != ''}}
+                       if i in nodes else {'id': i})
+    return {'node': label(target) if target in nodes else None,
+            'edges': [{'src': m['src'], 'rel': m['rel'], 'dst': m['dst'],
+                       **({'weight': m['weight']} if m.get('weight', 1.0) != 1.0 else {}),
+                       **({'ord': m['ord']} if m.get('ord') else {})} for m in edges],
+            'nodes': [label(i) for i in sorted(ids) if i in nodes and i != target],
+            'complete': len(edges) < limit}
+
+
 def execute(args):
     command = args.command
     settings = dict(DEPTH[getattr(args, 'depth', 'normal')])
@@ -420,7 +470,7 @@ def execute(args):
     if getattr(args, 'offset', 0) < 0:
         raise ValueError('--offset must be nonnegative.')
     collection = getattr(args, 'collection', None) or (
-        'structure' if command in ('map', 'endpoint') else 'attacks' if command in ('attacks', 'record-attack') else 'behavior')
+        'attacks' if command in ('attacks', 'record-attack') else 'graph')
     if command in ('get', 'similar'):
         collection = getattr(args, 'collection', None) or resolve_collection(args.db_path, args.target)
         if collection is None:
@@ -430,6 +480,14 @@ def execute(args):
     if command == 'evidence':
         collection = 'exchanges'
     agent = JebAgent(args.db_path, collection, create_if_missing=command == 'record-attack')
+    if command == 'graph':
+        view = graph_view(agent, args.target, rel=args.rel, direction=args.direction,
+                          depth=args.hops, limit=args.limit or 50)
+        if view['node'] is None and not view['edges']:
+            return envelope(command, results=[], notes=['No graph node with that id.'], next=[hints.query('map')])
+        return envelope(command, results=view['nodes'], target=view['node'], edges=view['edges'],
+                        complete=view['complete'],
+                        next=[hints.query('get', target=i['id']) for i in view['nodes'][:3]])
     if command == 'endpoint':
         import endpoint_report as er
         return er.build_report(agent, args.target, host=args.host, method=args.method,
@@ -438,11 +496,7 @@ def execute(args):
     if command == 'get':
         doc = agent.get_full(args.target, original=args.original)
         return envelope(command, collection=collection, count=int(doc is not None), document=doc,
-                        next=([hints.query('evidence', target=args.target),
-                               hints.query('similar', target=args.target)]
-                              if collection == 'behavior' else
-                              [hints.query('similar', target=args.target)]
-                              if collection in COLLECTIONS else []))
+                        next=_get_hints(doc, args.target, collection))
     if command == 'identifier':
         hits = agent.find_by_identifier(args.target)
         offset, limit = args.offset, args.limit or 50
@@ -508,11 +562,16 @@ def execute(args):
 def build_parser():
     parser = argparse.ArgumentParser(description='J.E.B. Chroma-only capture investigation')
     sub = parser.add_subparsers(dest='command', required=True)
-    for command in ('endpoint', 'map', 'search', 'get', 'similar', 'identifier', 'evidence', 'attacks', 'record-attack'):
+    for command in ('endpoint', 'map', 'search', 'get', 'similar', 'identifier', 'evidence', 'graph', 'attacks', 'record-attack'):
         p = sub.add_parser(command)
         p.add_argument('--db-path', default='./chroma_db')
-        if command in ('endpoint', 'get', 'similar', 'identifier', 'evidence'):
+        if command in ('endpoint', 'get', 'similar', 'identifier', 'evidence', 'graph'):
             p.add_argument('target')
+        if command == 'graph':
+            p.add_argument('--rel', choices=sorted(ontology.RELATIONS))
+            p.add_argument('--direction', choices=('out', 'in', 'both'), default='both')
+            p.add_argument('--hops', type=int, default=1)
+            p.add_argument('--limit', type=int)
         if command in ('identifier', 'evidence'):
             p.add_argument('--offset', type=int, default=0)
             p.add_argument('--limit', type=int, default=50)
@@ -522,6 +581,8 @@ def build_parser():
             p.add_argument('--original', action='store_true', help='include original HTTP base64')
         if command in ('search', 'get', 'similar'):
             p.add_argument('--in', dest='collection', choices=ADDRESSABLE if command in ('get', 'search') else COLLECTIONS)
+        if command in ('map', 'search'):
+            p.add_argument('--node-type')
         if command in ('endpoint', 'map', 'search', 'similar', 'attacks'):
             p.add_argument('--depth', choices=DEPTH, default='normal')
             p.add_argument('--limit', type=int)

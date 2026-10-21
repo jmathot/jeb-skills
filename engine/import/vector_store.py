@@ -161,7 +161,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input_file', help='explicit previously exported chunk JSON')
     parser.add_argument('--db-path', required=True)
-    parser.add_argument('--collection', choices=('structure', 'behavior'), required=True)
+    parser.add_argument('--collection', choices=('graph',), required=True)
     args = parser.parse_args()
     with open(args.input_file) as handle:
         chunks = json.load(handle)

@@ -30,12 +30,12 @@ from chromadb.utils import embedding_functions
 # Index-defining knobs. The plugin passes these as JEB_* env vars from opencode.json
 # plugin options; changing any of them changes the recorded embedding profile and
 # requires a project rebuild (the digest/profile check refuses mismatched queries).
-EMBEDDING_SCHEME = os.environ.get("JEB_EMBEDDING_SCHEME") or "embeddinggemma-v5-titled-768d"
-COLLECTION_SCHEMA = "jeb-v6-streaming"
+EMBEDDING_SCHEME = os.environ.get("JEB_EMBEDDING_SCHEME") or "embeddinggemma2-v1-titled-768d"
+COLLECTION_SCHEMA = "jeb-v7-graph"
 DISTANCE_METRIC = os.environ.get("JEB_DISTANCE_METRIC") or "cosine"
 
 OLLAMA_URL = os.environ.get("JEB_OLLAMA_URL") or "http://localhost:11434/api/embeddings"
-OLLAMA_MODEL = os.environ.get("JEB_EMBEDDING_MODEL") or "embeddinggemma:latest"
+OLLAMA_MODEL = os.environ.get("JEB_EMBEDDING_MODEL") or "embeddinggemma-2:latest"
 OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("JEB_OLLAMA_TIMEOUT", "3600"))
 OLLAMA_KEEP_ALIVE = os.environ.get("JEB_OLLAMA_KEEP_ALIVE", "30m")
 EMBEDDING_DIMENSIONS = int(os.environ.get("JEB_EMBEDDING_DIMENSIONS") or 768)

@@ -4,29 +4,36 @@ Two parts: the **bugfix plan** from the a8432e6 review, then the
 **knowledge-graph ingestion plan** (at the end of this file). Do the bugfix P0
 items and test-suite holes first: the graph work touches the same code.
 
-## Handoff status (2026-10-07)
+## Status (2026-10-21)
 
-Work stopped on a machine with neither the engine packages nor Ollama installed,
-so **nothing below has been run**. Items marked **[fixed, untested]** were edited
-but never executed. On the next machine:
+The embedding model is now `embeddinggemma-2:latest` (still 768 dimensions;
+cosine distances are compressed, so the query cutoffs moved to 0.38). The
+knowledge-graph plan at the end of this file is **implemented** and the suite is
+green against new baselines (`./tests/run.sh`, `engine/.venv/bin/python
+tests/test_units.py`). On the fixture, embedded records fell from 717 to 197.
 
-1. Set up the environment (see "Verification" at the end of the bugfix plan):
-   `python3 -m venv engine/.venv`,
-   `engine/.venv/bin/pip install -r engine/requirements.txt -r engine/requirements-viz.txt`,
-   `ollama pull embeddinggemma:latest`, and make sure Ollama is serving on :11434.
-2. Check the four fixes that were already made:
-   - P0-1: the `timeout 5` `_fit` check in "Verification" step 1;
-   - P0-2: `FEATURE_VERSION`/`IDENTIFIER_VERSION` are now `-v3`. Findings store
-     `identifier_version`; `repair_identifiers` and `record_attack` write it,
-     and repair treats a version mismatch as stale;
-   - T-1: `tests/fixture.py` keys the cache on the capture plus every
-     `engine/import/*.py`;
-   - T-2: `tests/bench_perf.py` fails on a missing digest baseline unless
-     `--update-baseline` is given.
-3. `./tests/run.sh --fresh`. The version bumps change extracted features, so
-   expect the tier C digests to move. Review the diff, then `--update-baseline`.
-4. Continue with P0-3, then the remaining T items and P1, then the graph plan
-   starting at its Phase 1. (Its Phase 0 is the four items above.)
+**Done:** P0-1..5, T-1, T-2, T-8 (as `tests/test_units.py`), P1-1, P1-4..9,
+the P2 items for the chromadb pin, the shared read lock and the case-insensitive
+host filter, and graph Phases 1-6 and 7 (baselines). P1-2 and P1-3 are resolved by
+construction: diversity is keyed on `anchor_id`, and findings/synthetic nodes are
+exempt.
+
+**Not done:**
+- T-3..T-7 (perf counter patch target, duplicate entity check, keyword oracle
+  identities, Tier A fixture mutation, hint parser).
+- P2 remainder: header/body split, `find_similar` seed parent, missing-DB message,
+  `--where '{}'`, cosine validation, bootstrap and `install.sh` fixes.
+- A TypeScript test for `buildArgv`.
+- Graph: external `Origin` nodes (`observed=false`) for third-party hosts named by
+  client code (counted in the ledger only); pairing a captured `.map` with its
+  bundle and per-module `Section` nodes (module names are recorded in facts but not
+  yet embedded); `make_capture.py` pages for every segmentation layer and a >2 MB
+  bundle, with tier A/B assertions (the pure pieces are covered in
+  `tests/test_units.py`); Tier B needle queries for the new page shapes.
+- Boilerplate removal works on chunk hashes plus repeated text blocks, not on
+  tag-path subtree hashes as originally planned.
+- Unverified assumptions about OpenCode v2 (symlinked plugin dependencies,
+  config key names).
 
 ---
 
@@ -416,7 +423,7 @@ Set up on the dev machine:
 ```bash
 python3 -m venv engine/.venv
 engine/.venv/bin/pip install -r engine/requirements.txt -r engine/requirements-viz.txt
-ollama pull embeddinggemma:latest      # tiers B and C need Ollama running
+ollama pull embeddinggemma-2:latest      # tiers B and C need Ollama running
 ```
 
 Checks:
@@ -436,7 +443,7 @@ Checks:
 
 ---
 
-## Knowledge-graph ingestion plan
+## Knowledge-graph ingestion plan (implemented 2026-10-21; see Status above for what was deferred)
 
 ### Context
 

@@ -34,6 +34,8 @@ export function runEngine(params: RunParams): Promise<RunResult> {
       else params.signal.addEventListener("abort", onAbort, { once: true })
     }
 
+    child.stdout.setEncoding("utf8")
+    child.stderr.setEncoding("utf8")
     child.stdout.on("data", (chunk) => (stdout += chunk))
     child.stderr.on("data", (chunk) => (stderr += chunk))
     child.on("error", (err) => {

@@ -2,17 +2,17 @@
 J.E.B. -- the `endpoint` command: everything known about one route, in one call.
 
 This is the answer to "investigate /api/orders". It is a deterministic index
-scan, not a vector search: `JebAgent.parent_index()` returns every canonical
-`structure` node in a single `collection.get`, and the route is located by
-comparing path templates. No embedding, no Ollama round-trip, and no relevance
-cutoff that a badly-worded query could fall foul of.
+scan, not a vector search: `JebAgent.parent_index()` returns every structural
+`graph` node (routes, origins, data objects) in a single `collection.get`, and the
+route is located by comparing path templates. No embedding, no Ollama round-trip,
+and no relevance cutoff that a badly-worded query could fall foul of.
 
 The report assembles, for the matched route(s): parameters, auth posture,
-cookies sent and set, missing security headers and CORS; the origin's auth-model
-node; sub-paths and sibling routes; the entity nodes that link this route to
-others handling the same data shape; the behavior documents it was observed in;
-and the raw request/response of one representative behavior, truncated
-structurally so headers always survive.
+cookies sent and set, missing security headers and CORS; the origin node;
+sub-paths and sibling routes; the data objects that link this route to others
+handling the same shape; the behaviors it was observed in; and the raw
+request/response of one representative behavior, truncated structurally so
+headers always survive. Relationships are read from the `edges` collection.
 """
 import re
 from urllib.parse import urlparse
@@ -21,7 +21,7 @@ import distill as d
 from storage import origin
 import hints
 
-SYNTHETIC_TEMPLATES = {'{auth-model}', '{entity}', '{spa-shell}'}
+SYNTHETIC_TEMPLATES = {'{auth-model}', '{entity}', '{posture}', '{spa-shell}'}
 PLACEHOLDER_RE = re.compile(r'^\{[^}]*\}$')
 
 # How much of each section survives at each depth.
@@ -46,7 +46,7 @@ def normalize_target(raw):
     """Accepts a path, a host-qualified path, or a full URL.
 
     `/api/orders/42` and `https://app/api/orders/42?limit=10` both normalise to
-    the template `/api/orders/{id}`, which is what `structure` actually stores --
+    the template `/api/orders/{id}`, which is what route nodes actually store --
     so the agent may paste whatever the user said.
     """
     raw = (raw or '').strip()
@@ -227,8 +227,8 @@ def _node_view(doc_id, meta, tier):
             'headers_missing': _csv_list(meta.get('security_headers_missing')),
             'cors': meta.get('cors', ''),
         },
-        'example_ids': _csv_list(meta.get('example_ids')),
-        'entity_ids': _csv_list(meta.get('entity_ids')),
+        'example_ids': [],
+        'entity_ids': [],
     }
 
 
@@ -281,6 +281,18 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
     matches = [_node_view(doc_id, meta, classify_match(target, meta))
                for doc_id, meta in primary]
 
+    edges_out = agent.neighbors([m['id'] for m in matches], direction='out', limit=5000)
+    behavior_ids = list(dict.fromkeys(e['dst'] for e in edges_out if e['rel'] == 'HAS_BEHAVIOR'))
+    behavior_meta = {i: e['metadata'] for i, e in agent.get_many(behavior_ids).items()}
+    for m in matches:
+        mine = [e for e in edges_out if e['src'] == m['id']]
+        own = [e['dst'] for e in mine if e['rel'] == 'HAS_BEHAVIOR' and e['dst'] in behavior_meta]
+        own.sort(key=lambda i: (-int(behavior_meta[i].get('instance_count', 0) or 0), i))
+        m['example_ids'] = own
+        m['entity_ids'] = list(dict.fromkeys(
+            e['dst'] for e in mine if e['rel'] in ('RETURNS', 'ACCEPTS') and e['dst_type'] == 'data_object'))
+        m['posture_id'] = next((e['dst'] for e in mine if e['rel'] == 'HAS_POSTURE'), '')
+
     hosts = sorted({m['origin'] for m in matches})
     if len(hosts) > 1:
         notes.append(f"{len(hosts)} origins serve this path: {', '.join(hosts)}. "
@@ -326,27 +338,23 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
                 if eid not in seen:
                     seen.add(eid)
                     example_ids.append(eid)
-        behaviors = agent.get_many(example_ids[:budget['examples'] * 2],
-                                   collection_name='behavior')
-        metas = {i: e['metadata'] for i, e in behaviors.items()}
+        metas = {i: behavior_meta[i] for i in example_ids if i in behavior_meta}
         if metas:
             report['examples'] = [
                 _example_view(i, metas[i])
                 for i in example_ids if i in metas][:budget['examples']]
-            variant_ids = list(dict.fromkeys(
-                variant_id for example in report['examples']
-                for variant_id in example.get('variant_ids', [])))
-            if variant_ids:
-                variant_docs = agent.get_many(
-                    variant_ids[:budget['examples']], collection_name='behavior')
+            observed = agent.neighbors([e['id'] for e in report['examples']],
+                                       rel='OBSERVED_IN', direction='out')
+            if observed:
                 report['variants'] = [
-                    _example_view(i, variant_docs[i]['metadata'])
-                    for i in variant_ids if i in variant_docs][:budget['examples']]
+                    {'behavior_id': e['src'], 'exchange_id': e['dst'], 'instances': int(e['weight']),
+                     'variant_key': e['variant_key']}
+                    for e in observed][:budget['examples'] * 4]
             if raw_budget:
                 report['raw_example'] = _raw_example(agent, metas, raw_budget)
         elif example_ids:
-            notes.append("This route's example behavior ids are not present in the "
-                         "behavior collection; re-run jeb_import.")
+            notes.append("This route's behaviors are missing from the graph; "
+                         "run jeb_import command=rebuild.")
 
     report['notes'] = notes
     report['next'] = _next_steps(report, target)
@@ -378,7 +386,7 @@ def _example_view(doc_id, meta):
         'set_cookies': _csv_list(meta.get('set_cookies')),
         'jwt': meta.get('jwt', ''),
         'summary': meta.get('summary', ''),
-        'variant_ids': _csv_list(meta.get('variant_ids')),
+        'variant_count': meta.get('variant_count', 1),
     }
 
 
@@ -386,8 +394,7 @@ def _raw_example(agent, metas, budget):
     chosen = pick_representative(metas)
     if not chosen:
         return None
-    full = agent.get_many([chosen], collection_name='behavior',
-                          include=('metadatas', 'documents'))
+    full = agent.get_many([chosen], include=('metadatas', 'documents'))
     if chosen not in full:
         return None
     meta = dict(full[chosen]['metadata'] or {})
@@ -432,21 +439,27 @@ def _auth_model(agent, matches, want_report):
 
 
 def _entities(agent, matches):
-    ids, seen = [], set()
-    for m in matches:
-        for eid in m['entity_ids']:
-            if eid not in seen:
-                seen.add(eid)
-                ids.append(eid)
+    ids = list(dict.fromkeys(eid for m in matches for eid in m['entity_ids']))
+    if not ids:
+        return []
+    incoming = agent.neighbors(ids, direction='in', limit=5000)
+    routes = agent.get_many([e['src'] for e in incoming if e['src_type'] == 'route'])
+
+    def entry(edge):
+        meta = routes.get(edge['src'], {}).get('metadata') or {}
+        return f"{meta.get('method', '')} {origin(meta)}{meta.get('endpoint_template', '')}".strip()
+
     out = []
-    for doc_id, entry in agent.get_many(ids).items():
-        meta = entry['metadata']
+    for doc_id, found in agent.get_many(ids).items():
+        meta = found['metadata']
+        produced = sorted({entry(e) for e in incoming if e['dst'] == doc_id and e['rel'] == 'RETURNS'
+                           and e['src_type'] == 'route' and e['src'] in routes})
+        consumed = sorted({entry(e) for e in incoming if e['dst'] == doc_id and e['rel'] == 'ACCEPTS'
+                           and e['src'] in routes})
         out.append({'entity_id': doc_id,
                     'identifier_field': meta.get('identifier_field', ''),
-                    'produced_by': _csv_list(meta.get('produced_by'))[:25],
-                    'consumed_by': _csv_list(meta.get('consumed_by'))[:25],
-                    'links_truncated': any(len(_csv_list(meta.get(f))) > 25
-                                           for f in ('produced_by', 'consumed_by'))})
+                    'produced_by': produced[:25], 'consumed_by': consumed[:25],
+                    'links_truncated': len(produced) > 25 or len(consumed) > 25})
     return out
 
 
@@ -459,7 +472,9 @@ def _next_steps(report, target):
         steps.append(hints.query('get', target=report['examples'][0]['id']))
     if report.get('related_by_entity'):
         steps.append(hints.query('identifier', target='<id value>'))
-    steps.append(hints.query('search', collection='behavior', path=target['path']))
+    if report.get('matches'):
+        steps.append(hints.query('graph', target=report['matches'][0]['id']))
+    steps.append(hints.query('search', node_type='behavior', path=target['path']))
     steps.append(hints.query('attacks', path=target['path']))
     return steps
 
