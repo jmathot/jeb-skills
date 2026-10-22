@@ -222,23 +222,24 @@ engine/.venv/   auto-created on first load
 
 `tests/` holds a benchmark suite built on one committed Burp export. The capture
 is generated, so its ground truth is known without running the engine:
-`tests/make_capture.py` writes both `tests/capture.xml` (296 items, single
-origin) and `tests/ground_truth.json` (routes, entities, identifiers, keyword
+`tests/make_capture.py` writes both `tests/capture.xml` (307 items, single
+origin, including long div-only, flat-text, listing and hydration pages, a shared widget, a form, a >2 MB bundle and a webpack bundle with its source map) and `tests/ground_truth.json` (routes, entities, identifiers, keyword
 needles, and a graded semantic query set). Queries run against `graph` and are
 graded per route, so a route node and its behavior nodes answer to the same
-reference. `tests/test_units.py` checks the pure pieces (segmentation, JavaScript
-facts, `_fit`, `build_graph`) with no Chroma or Ollama:
-`engine/.venv/bin/python tests/test_units.py`.
+reference. Tier U (`tests/test_units.py` plus `tests/ts/*.test.mjs`) checks the pure pieces
+(segmentation, JavaScript facts, `_fit`, `build_graph`, the TypeScript argv
+builder and config signature) with no Chroma or Ollama.
 
 ```bash
 ./tests/run.sh                    # all tiers against the cached import
-./tests/run.sh --tier a           # one tier; repeatable
+./tests/run.sh --tier a           # one tier (u, a, b, c); repeatable
 ./tests/run.sh --fresh            # re-import first (see the caveat below)
 ./tests/run.sh --update-baseline  # re-record tier B metrics and tier C digests
 ```
 
 | Tier | Measures | Fails on |
 |---|---|---|
+| **U** `test_units.py`, `ts/` | Segmentation, JS facts, `_fit`, `build_graph`, `buildArgv`, config signature | any failed check |
 | **A** `bench_correctness.py` | Route set, node kinds, access-control classification, entity grouping and fuzzy `related` scores, auth model, identifier lookups, evidence round trip, findings, `next` hints against the schemas in `src/tools.ts` | any changed derived fact |
 | **B** `bench_retrieval.py` | Recall@k, MRR, nDCG@k and precision over the graded query set at two depths; keyword `contains` against an independent decoder; vulnerability-jargon screening | a metric below its committed floor, oracle disagreement, or a screening change |
 | **C** `bench_perf.py` | Phase timings, Chroma/Ollama/HTML-parse call counts, query latency percentiles against the process floor, peak RSS, `build_entities` scaling curve, and the bit-identical export gate | only the bit-identical gate; timings are reported, never gated |

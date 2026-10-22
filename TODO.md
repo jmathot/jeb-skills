@@ -4,34 +4,35 @@ Two parts: the **bugfix plan** from the a8432e6 review, then the
 **knowledge-graph ingestion plan** (at the end of this file). Do the bugfix P0
 items and test-suite holes first: the graph work touches the same code.
 
-## Status (2026-10-21)
+## Status (2026-10-22)
 
-The embedding model is now `embeddinggemma-2:latest` (still 768 dimensions;
-cosine distances are compressed, so the query cutoffs moved to 0.38). The
-knowledge-graph plan at the end of this file is **implemented** and the suite is
-green against new baselines (`./tests/run.sh`, `engine/.venv/bin/python
-tests/test_units.py`). On the fixture, embedded records fell from 717 to 197.
+The knowledge-graph plan is implemented and the suite is green (`./tests/run.sh`:
+tiers U, A, B, C). Since the 2026-10-21 status: fixture pages for every page and
+bundle shape; module sections with source-map pairing; external `Origin` nodes;
+`graph` shows findings; the T-3..T-7 test fixes, tier U and the TypeScript tests;
+the P2 items for header split, `similar`, missing-DB message, `--where '{}'`,
+cosine guard, bootstrap, config signature and `install.sh`.
 
-**Done:** P0-1..5, T-1, T-2, T-8 (as `tests/test_units.py`), P1-1, P1-4..9,
-the P2 items for the chromadb pin, the shared read lock and the case-insensitive
-host filter, and graph Phases 1-7, fixture pages for every page and bundle shape, module
-sections with source-map pairing, external `Origin` nodes, and `graph` showing
-findings. P1-2 and P1-3 are resolved by
-construction: diversity is keyed on `anchor_id`, and findings/synthetic nodes are
-exempt.
+**Measured:**
+- Scale (600 HTML pages + 8 bundles, 57 MB): parse+annotate 19.5 s, `build_graph`
+  0.2 s, peak RSS 189 MB, 6,027 embedded records (4,800 sections). Embedding is the
+  cost: an Ollama import of that capture ran over an hour with no sign of finishing.
+  Lower `MAX_SECTIONS_PER_PAGE` or batch size if big site captures matter.
+- `command=rebuild` on a project built by 29cfffe: finding ids preserved,
+  `structure`/`behavior` removed, `TARGETS` edge present.
+- Tier B on `normal` is at or above the pre-graph recall and nDCG; precision is
+  lower (0.36 vs 0.41) because route, behavior and section nodes share one
+  collection and the query set grades one result per route.
+- Boilerplate: chunk-hash plus repeated-text-block removal strips div-only chrome
+  completely, so tag-path subtree hashes are not needed.
 
-**Not done:**
-- T-3..T-7 (perf counter patch target, duplicate entity check, keyword oracle
-  identities, Tier A fixture mutation, hint parser).
-- P2 remainder: header/body split, `find_similar` seed parent, missing-DB message,
-  `--where '{}'`, cosine validation, bootstrap and `install.sh` fixes.
-- A TypeScript test for `buildArgv`.
-- Boilerplate: measured on the fixture (div-only chrome shared by most pages),
-  chunk-hash plus repeated-text-block removal strips it completely (tier A
-  asserts no chrome phrase survives in any page node), so tag-path subtree hashes
-  are not needed. Revisit only if a real capture leaves chrome behind.
+**Open:**
 - Unverified assumptions about OpenCode v2 (symlinked plugin dependencies,
-  config key names).
+  `plugins/` and `agents/` directory names, config key names). OpenCode is not
+  installed on this machine, so the tools have not been run from the host.
+- P2 leftovers: identifier-lookup normalisation (needs an identifier version bump),
+  `req_semantic` embedding raw OAuth/OTP values, `load_many` decoding full bodies.
+- Several sections of the bugfix plan below are historical; trust this block.
 
 ---
 
