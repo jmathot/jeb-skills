@@ -7,7 +7,8 @@ import { registerTools } from "./tools.js"
 export default Plugin.define({
   id: "jebediah",
   async setup(ctx) {
-    const { env, indexSignature, warnings } = buildConfig(ctx.options)
+    const config = buildConfig(ctx.options)
+    const { indexSignature, warnings } = config
     for (const warning of warnings) console.warn(`[jebediah] ${warning}`)
 
     // Warn when an index-defining option changed since last load: existing databases
@@ -16,7 +17,7 @@ export default Plugin.define({
       const prev = (await ctx.storage.get("indexProfile")) as { signature?: string } | undefined
       if (prev?.signature !== undefined && prev.signature !== indexSignature) {
         console.warn(
-          "[jebediah] an index-defining option (embedding model/dimensions/scheme, distance metric, or ollama URL) changed. " +
+          "[jebediah] the embedding profile changed. " +
             "Existing project databases must be rebuilt: run `jeb import` with command=rebuild for each project.",
         )
       }
@@ -25,8 +26,8 @@ export default Plugin.define({
       // storage unavailable; skip the drift check.
     }
 
-    const python = await bootstrap(ctx)
-    await registerTools(ctx, python, env)
+    // A failed preparation may be retried; successful bootstrap is shared on disk.
+    await registerTools(ctx, () => bootstrap(), config)
     await configureAgent(ctx)
   },
 })

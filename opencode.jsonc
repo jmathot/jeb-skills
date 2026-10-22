@@ -1,33 +1,5 @@
 {
-  // Example configuration for the J.E.B.E.D.I.A.H. plugin. Copy the relevant parts
-  // into your own ~/.config/opencode/opencode.json(c). The plugin itself is loaded
-  // from ~/.config/opencode/plugins/jebediah (see README).
   "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    {
-      "package": "jebediah",
-      "options": {
-        // --- Index-defining (changing any of these requires `jeb import` command=rebuild) ---
-        "embeddingModel": "embeddinggemma-2:latest",
-        "embeddingDimensions": 768,
-        "embeddingScheme": "embeddinggemma2-v1-titled-768d",
-        "distanceMetric": "cosine",
-        "ollamaUrl": "http://localhost:11434/api/embeddings",
-
-        // --- Runtime / query-time (safe to change anytime) ---
-        "ollamaTimeoutSeconds": 3600,
-        "candidateCeiling": 1000,
-        // Embedding request sizing. Throughput is per-document, so these are a
-        // tuning lever rather than a speedup; the doc cap normally binds first.
-        "embedBatchDocs": 32,
-        "embedBatchChars": 48000,
-        "maxDistance": { "graph": 0.38, "attacks": 0.38 },
-        "depth": {
-          "quick": { "candidateK": 20, "nResults": 5, "maxPerEndpoint": 1, "snippetLen": 120, "rawChars": 0 },
-          "normal": { "candidateK": 40, "nResults": 8, "maxPerEndpoint": 1, "snippetLen": 200, "rawChars": 2000 },
-          "deep": { "candidateK": 120, "nResults": 25, "maxPerEndpoint": 2, "snippetLen": 400, "rawChars": 8000 }
-        }
-      }
-    }
-  ]
+  // Repository configuration, not an active plugin registration. Run install.sh
+  // to configure the global plugin. Complete examples are under examples/.
 }

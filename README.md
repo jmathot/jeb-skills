@@ -4,7 +4,7 @@ John's Extension for Burpsuite Export Data Ingestion And Handling: a local,
 Chroma-only RAG system for investigating Burp Suite XML captures.
 
 This repository is an **OpenCode v2 plugin**. It bundles a Python engine (Chroma
-vector store + Ollama EmbeddingGemma embeddings) and exposes it as native `jeb`
+vector store + selectable embeddings) and exposes it as native `jeb`
 tools, plus the **J.E.B.E.D.I.A.H.** primary agent. Engagement captures and
 databases live in a separate project directory, never in this repo.
 
@@ -16,7 +16,8 @@ databases live in a separate project directory, never in this repo.
   (`HAS_BEHAVIOR`, `RETURNS`, `CHILD_OF`, `CONTAINS`, `SUBMITS_TO`, `CALLS`, …;
   the full ontology is `engine/import/ontology.py`). Each node's embedding
   carries a one-hop context header built from its neighbours, with no LLM.
-- **Semantic discovery:** Ollama EmbeddingGemma-2 vectors, explicit cosine
+- **Semantic discovery:** Ollama EmbeddingGemma 2 or LiteLLM Gemini Embedding 2 /
+  Qwen3-Embedding-8B vectors, explicit cosine
   distance. Response content — JSON field names, and an HTML page's title,
   headings, form fields and visible text — is carried by `behavior` nodes; `route`
   nodes index per-route protocol facts, so a page is found there by route and
@@ -39,10 +40,10 @@ databases live in a separate project directory, never in this repo.
 
 ### Chroma collections
 
-A project database holds five collections that matter to a user: two embedded, four lookup (`captures`, `exchanges`, `identifiers`, `edges`).
+A project database holds six collections: two embedded, four lookup (`captures`, `exchanges`, `identifiers`, `edges`).
 
-**Embedded** — the semantic search targets. EmbeddingGemma-2 vectors, 768
-dimensions, cosine distance:
+**Embedded** — the semantic search targets. All use one selected embedding profile
+per project, with cosine distance. Models cannot be mixed, even at equal dimensions:
 
 | Collection | Records |
 |---|---|
@@ -50,7 +51,7 @@ dimensions, cosine distance:
 | `attacks` | Recorded testing events and evidence |
 
 **Lookup** — exact `get()` and metadata equality only. These use fixed
-one-dimensional vectors and never call Ollama:
+one-dimensional vectors and never call an embedding model:
 
 | Collection | Records |
 |---|---|
@@ -74,40 +75,110 @@ collections and APIs.
 
 ## Install
 
-Requirements: Python 3.10+, and Ollama 0.11.10+ with `embeddinggemma-2:latest`
-pulled.
+Requirements: **OpenCode V2.1.3+, Node 22.18+ with npm, Python 3.10+** (including venv/pip),
+and one of the embedding connections below. Installation needs access to npm;
+first tool use installs the Python requirements. No model is downloaded or called
+by the installer or plugin setup.
 
-Run the install script, which symlinks the plugin and agent into OpenCode's
-config directory (so the agent works in any engagement project) and pulls the
-embedding model:
-
-```bash
-./install.sh
-```
-
-Options: `--copy` to copy instead of symlink, `--force` to replace an existing
-entry, and `OPENCODE_CONFIG_DIR=...` to override the config location (default
-`${XDG_CONFIG_HOME:-$HOME/.config}/opencode`). The equivalent manual steps:
+For LiteLLM Qwen, reuse your OpenCode provider and name a pinned deployment revision:
 
 ```bash
-ln -s "$(pwd)" ~/.config/opencode/plugins/jebediah
-ln -s "$(pwd)/agents/jebediah.md" ~/.config/opencode/agents/jebediah.md
-ollama pull embeddinggemma-2:latest
+./install.sh --preset litellm-qwen3-embedding-8b \
+  --provider litellm --model qwen/qwen3-embedding-8b \
+  --model-revision YOUR-PINNED-DEPLOYMENT-REVISION
 ```
 
-On first load the plugin **auto-bootstraps** the Python engine: it creates
-`engine/.venv`, installs `engine/requirements.txt` + `engine/requirements-viz.txt`,
-and warns (without failing) if Ollama or the embedding model is missing. The
-bootstrap is idempotent — later loads are a no-op unless the requirement files
-change. Restart OpenCode after linking; select **J.E.B.E.D.I.A.H.** with Tab.
+The installer links this checkout into `<config>/packages/jebediah`, installs the
+primary agent under `<config>/agents/`, and adds one explicit local-path plugin
+entry to `opencode.json(c)`. It installs locked Node dependencies and builds the
+JavaScript entrypoint (`dist/index.js`) before registration. Unrelated JSONC settings/comments are preserved.
+Packages live outside `plugins/` to avoid accidental automatic double-loading.
+Linked installations register the real checkout directory so the host does not
+try to watch a directory symlink; copied installations register the installed copy.
+A root `index.js` forwards local-directory discovery to the compiled entrypoint.
+After changing TypeScript in a linked checkout, run `npm run build` before
+reloading OpenCode; the host loads `dist/`, not the source files.
+
+```bash
+./install.sh --help
+# Local embedding option (model preparation is a separate, manual step):
+./install.sh --preset ollama-embeddinggemma2
+# Gemini option (manual live validation only):
+./install.sh --preset litellm-gemini-embedding-2 \
+  --provider litellm --model gemini-embedding-2 --model-revision YOUR-REVISION
+```
+
+Options: `--copy` makes a standalone copy; `--force` **backs up** conflicting
+entries instead of deleting them. Re-running a symlink installation is idempotent;
+replacing a copy requires `--force`. `--skip-deps` skips Node installation for
+offline installer tests/prepared checkouts and requires an existing `dist/` build;
+copied packages then need `npm ci --ignore-scripts --omit=dev` in their destination before use.
+`OPENCODE_CONFIG_DIR=...` overrides `${XDG_CONFIG_HOME:-$HOME/.config}/opencode`.
+Move an old `plugins/jebediah` installation out of the discovery directory first.
+
+On **first tool use**, the plugin creates `engine/.venv` and installs both
+requirements files under a shared lock. A disk readiness stamp avoids reinstalling
+per project. A failed preparation is retryable. Stale locks are never stolen:
+check the PID in `engine/.venv.lock` before removing an abandoned lock manually.
+Restart OpenCode if needed and select the `jebediah` primary agent. Database/file
+writes obey `edit` permissions; remote embedding calls use the `jeb.embed` action.
+
+To remove the plugin, remove only its entry from the global `plugins` array and
+its installed agent/link (or the known copied package). Do not remove engagement
+databases or unfamiliar files. Backups made by `--force` are left for you to review.
 
 The agent (`agents/jebediah.md`) is a separate OpenCode agent definition because a
 plugin cannot create a primary agent; the plugin registers the tools it uses.
 
 ## Configuration
 
-Set RAG hyperparameters as plugin `options` in `opencode.json(c)` (see
-`opencode.jsonc` for a full example). Two tiers:
+Set plugin `options` in the global `opencode.json(c)`. See
+[`examples/qwen.jsonc`](examples/qwen.jsonc),
+[`examples/gemini.jsonc`](examples/gemini.jsonc), and
+[`examples/ollama.jsonc`](examples/ollama.jsonc). Copy the relevant **options** into
+the existing entry; preserve the package path written by the installer. Example
+`./packages/jebediah` paths describe copied installations, not linked checkouts.
+
+### Embedding presets
+
+| Preset | Native dimensions | Input limit | Formatting |
+|---|---:|---:|---|
+| `ollama-embeddinggemma2` | 768 | 8192 tokens | Titled documents, `task: search result` queries |
+| `litellm-gemini-embedding-2` | 3072 | 8192 tokens | Same text prefixes; **no `task_type` parameter** |
+| `litellm-qwen3-embedding-8b` | 4096 | 32768 tokens (or deployment limit) | English `Instruct:` / `Query:` on queries only; documents have no instruction |
+
+For LiteLLM, `model` is your gateway alias, not necessarily the upstream model ID.
+`providerID` reuses public OpenCode provider settings, headers, and active API-key
+connections. Credentials are resolved per execution, never stored in Chroma.
+OAuth/external connections are not forwarded. Alternatively set `baseURL` (including
+`/v1` if your gateway requires it) and `apiKeyEnv: "LITELLM_API_KEY"`. Do not put
+keys in plugin options. Distilled capture text is sent to that endpoint: obtain
+appropriate authorization and check gateway/provider logging and retention.
+
+LiteLLM requires `modelRevision`: pin the deployed weights/model and disable
+cross-model fallbacks behind the alias. An alias or deployment ID alone cannot
+prove immutable weights; update this revision and rebuild when the deployment
+changes. JEB cannot detect an unreported gateway weight replacement.
+
+All responses must contain one finite, nonzero vector per input, with the exact
+configured dimension; JEB restores response index order and L2-normalizes vectors.
+Gemini routes must not aggregate a batch into one vector. Prefer LiteLLM's Gemini
+API route; Vertex batch semantics need manual verification. Gemini 2 supports
+128–3072 dimensions (recommended 768/1536/3072), Gemma 2 supports 128/256/512/768,
+and Qwen supports 32–4096 subject to the serving endpoint. Request dimension
+support must be verified; `sendDimensions: false` omits the API parameter but still
+requires an exact output dimension. No silent fallback or client-side dimension slicing.
+
+Qwen serving must use the correct last-token pooling; do not add a second query
+instruction in the gateway. For Ollama, manually prepare `embeddinggemma-2:latest`
+using a compatible Ollama release; the old `embeddinggemma` model is not equivalent.
+Gemma 2's model card specifies 8192 tokens despite conflicting larger context
+labels in the Ollama catalog. `contextTokens` can lower the effective deployment
+budget. JEB conservatively bounds UTF-8 input bytes (including prefixes, with
+special-token headroom) rather than assuming four characters per token, and
+Ollama requests explicitly set `truncate: false`.
+
+### Runtime / query settings
 
 **Query-time — safe to change anytime:**
 
@@ -116,8 +187,13 @@ Set RAG hyperparameters as plugin `options` in `opencode.json(c)` (see
 | `maxDistance.{graph,attacks}` | Per-collection cosine distance cutoff (0–2). Defaults of 0.38 are calibrated for EmbeddingGemma-2, whose distances are compressed (relevant hits 0.20–0.37, off-topic queries 0.41+). |
 | `candidateCeiling` | Upper bound on adaptive candidate expansion. |
 | `depth.{quick,normal,deep}.{candidateK,nResults,maxPerEndpoint,snippetLen,rawChars}` | Retrieval budget presets. |
-| `ollamaTimeoutSeconds` | Embedding request timeout. |
-| `embedBatchDocs` / `embedBatchChars` | Documents and characters per embedding request (default 32 / 48000). Tuning lever only — EmbeddingGemma throughput is per-document, so larger batches gain little. |
+| `embedding.timeoutSeconds` | Embedding HTTP timeout (default 120 seconds). |
+| `embedding.keepAlive` | Ollama only; default `30m`. |
+| `embedBatchDocs` / `embedBatchChars` | Documents and characters per embedding request (default 32 / 48000). |
+
+The `0.38` cutoff applies only to the existing Gemma calibration. LiteLLM presets
+default to **no distance cutoff** until you explicitly calibrate `maxDistance`;
+they still respect result/diversity limits. Do not copy Gemma cutoffs to Qwen or Gemini.
 
 Semantic retrieval matches on the distilled `embed_text`, which spells protocol
 facts in searchable words (`cors: wildcard, access-control-allow-origin * allows
@@ -132,11 +208,21 @@ engine refuses queries against a mismatched database:
 
 | Option | Default |
 |---|---|
-| `embeddingModel` | `embeddinggemma-2:latest` |
-| `embeddingDimensions` | `768` |
-| `embeddingScheme` | `embeddinggemma2-v1-titled-768d` |
-| `distanceMetric` | `cosine` |
-| `ollamaUrl` | `http://localhost:11434/api/embeddings` |
+| `embedding.preset` | `ollama-embeddinggemma2` |
+| `embedding.model` | Selected preset's model/tag |
+| `embedding.dimensions` | Selected preset's native dimensions |
+| `embedding.modelRevision` | Required for LiteLLM; Ollama uses the installed digest |
+| `embedding.contextTokens` | Selected preset's limit |
+
+Prompt schemes and normalization are selected by the preset, not free-form options.
+Changing model/profile/dimensions requires a rebuild of **graph and attacks** while
+preserving finding IDs, capture evidence, and observations. Existing pre-preset
+projects need a rebuild. Endpoint, credential, timeout, and batch-size changes do
+not themselves change vector identity. Only cosine distance is supported.
+
+Legacy `embeddingModel`, `embeddingDimensions`, `ollamaUrl`, and
+`ollamaTimeoutSeconds` remain aliases for old Ollama setups. Remove an old
+`embeddingScheme` override; it is rejected rather than silently mislabeling vectors.
 
 The plugin warns on load when an index-defining option changed since last run.
 Options are passed to the engine as `JEB_*` environment variables; omitted options
@@ -212,10 +298,11 @@ with `jeb_import command=rebuild` while retaining findings.
 
 ```
 src/            TypeScript plugin (Plugin.define → tools + agent sync + bootstrap)
+dist/           compiled plugin entrypoint (npm run build; loaded by OpenCode)
 agents/         J.E.B.E.D.I.A.H. agent definition
 engine/import/  Python import/maintenance CLI (import_project.py + modules)
 engine/query/   Python query CLI (agent_interface.py + modules)
-engine/.venv/   auto-created on first load
+engine/.venv/   auto-created on first tool use
 ```
 
 ## Testing
@@ -230,11 +317,19 @@ reference. Tier U (`tests/test_units.py` plus `tests/ts/*.test.mjs`) checks the 
 (segmentation, JavaScript facts, `_fit`, `build_graph`, the TypeScript argv
 builder and config signature) with no Chroma or Ollama.
 
+**Cost policy: all live automated testing MUST use LiteLLM Qwen3-Embedding-8B.**
+Ollama and Gemini have mocked contract tests only; live validation is manual.
+There are no automatic model downloads or fallbacks. See
+[`docs/testing.md`](docs/testing.md) for commands, credentials, baselines, and manual checks.
+
 ```bash
-./tests/run.sh                    # all tiers against the cached import
-./tests/run.sh --tier a           # one tier (u, a, b, c); repeatable
-./tests/run.sh --fresh            # re-import first (see the caveat below)
-./tests/run.sh --update-baseline  # re-record tier B metrics and tier C digests
+npm ci --ignore-scripts
+npm run typecheck
+npm test                         # offline units, mocked transports, installer/runtime tests
+# Paid/live Qwen tests are opt-in. Reuse the public OpenCode provider configuration:
+JEB_TEST_LIVE=1 python3 tests/live.py --revision YOUR-REVISION -- --tier a
+# Explicitly refresh Qwen-only retrieval/perf/digest baselines:
+JEB_TEST_LIVE=1 python3 tests/live.py --revision YOUR-REVISION -- --live --update-baseline
 ```
 
 | Tier | Measures | Fails on |
@@ -244,7 +339,7 @@ builder and config signature) with no Chroma or Ollama.
 | **B** `bench_retrieval.py` | Recall@k, MRR, nDCG@k and precision over the graded query set at two depths; keyword `contains` against an independent decoder; vulnerability-jargon screening | a metric below its committed floor, oracle disagreement, or a screening change |
 | **C** `bench_perf.py` | Phase timings, Chroma/Ollama/HTML-parse call counts, query latency percentiles against the process floor, peak RSS, `build_entities` scaling curve, and the bit-identical export gate | only the bit-identical gate; timings are reported, never gated |
 
-The import is cached in `tests/.work/<capture-sha>/`, so tiers A and B reuse one
+The import is cached in `tests/.work/<capture-and-profile-sha>/`, so tiers A and B reuse one
 database and only tier C pays for a cold import.
 
 **Changing the ingest path needs `--fresh`.** Feature extraction results are

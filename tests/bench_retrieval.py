@@ -17,9 +17,10 @@ import re
 import sys
 
 import fixture
+from policy import BASELINE_NAME
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
-BASELINE = os.path.join(TESTS, 'baseline', 'retrieval.json')
+BASELINE = os.path.join(TESTS, 'baseline', BASELINE_NAME, 'retrieval.json')
 DEPTH_K = {'quick': 5, 'normal': 8}
 
 

@@ -6,20 +6,14 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import chromadb
-from embedding import EMBEDDING_SCHEME, embed_documents, make_ollama_ef, embedding_profile
+from embedding import embed_documents, make_embedding_ef, embedding_profile, profile_fingerprint
 from storage import digest, scan, delete_ids, writer_lock, batches
 
-# Embedding batch budget; each flush is one Ollama request. Measured throughput is
-# nearly flat past ~32 documents (36.6 ms/doc at 32 vs 34.7 at 128 on EmbeddingGemma),
-# because the cost is per-document compute rather than request overhead -- so the
-# doc cap stays conservative, keeping the re-work small when a batch has to retry.
-# The char budget only exists to stop a few long documents making an oversized
-# request; the 2048-token limit is per *document*, not per batch, so it can be
-# generous. Distilled embed_text runs a few hundred chars, so the doc cap normally
-# binds first. Vectors are computed per input, so batching never changes them.
+# Each flush is one embedding request. The separate character budget bounds the
+# payload; model-specific per-input token limits are enforced by the adapter.
 MAX_BATCH_DOCS = int(os.environ.get('JEB_EMBED_BATCH_DOCS') or 32)
 MAX_BATCH_CHARS = int(os.environ.get('JEB_EMBED_BATCH_CHARS') or 48000)
-# Concurrent Ollama requests. 1 restores the strictly serial behavior.
+# Concurrent embedding requests. 1 restores the strictly serial behavior.
 EMBED_WORKERS = max(1, int(os.environ.get('JEB_EMBED_WORKERS') or 2))
 
 
@@ -48,7 +42,7 @@ def _embed_with_retry(ollama_ef, values):
             return embed_documents(ollama_ef, [c['embed_text'] for c in values],
                                    [c.get('embedding_title', '') for c in values])
         except Exception as exc:
-            if isinstance(exc, ValueError) or getattr(exc, 'status_code', None) in (400, 404, 413, 422) or attempt == 2:
+            if isinstance(exc, ValueError) or getattr(exc, 'status_code', None) in (400, 401, 403, 404, 413, 422) or attempt == 2:
                 raise
             time.sleep(2 ** attempt)
 
@@ -93,7 +87,7 @@ def store(collection, chunks, ollama_ef, reconcile=False):
                 total += 1
                 meta = serialize_meta(chunk['metadata'])
                 text, title = chunk['embed_text'], chunk.get('embedding_title', '')
-                eh = digest([EMBEDDING_SCHEME, (collection.metadata or {}).get('embedding_model_digest'), text, title])
+                eh = digest([profile_fingerprint(collection.metadata), text, title])
                 ch = digest([eh, chunk['page_content'], meta])
                 old = existing.get(chunk['id']) or {}
                 if old.get('_content_hash') == ch:
@@ -167,7 +161,7 @@ def main():
         chunks = json.load(handle)
     with writer_lock(args.db_path):
         client = chromadb.PersistentClient(path=args.db_path)
-        ef = make_ollama_ef()
+        ef = make_embedding_ef()
         store(semantic_collection(client, args.collection, ef), chunks, ef)
 
 

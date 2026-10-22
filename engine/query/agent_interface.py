@@ -11,7 +11,7 @@ import chromadb
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.normpath(os.path.join(HERE, '../import')))
-from embedding import EMBEDDING_PROFILE_METADATA, embed_documents, make_ollama_ef, embedding_profile
+from embedding import EMBEDDING_PROFILE_METADATA, embed_documents, make_embedding_ef, embedding_profile
 import distill as d
 import ontology
 from storage import (LOOKUP_COLLECTIONS, batches, scan, sync_identifiers,
@@ -80,7 +80,7 @@ class JebAgent:
         if not is_project(self.db_path):
             raise MissingCollection('Project database does not exist; import a capture first.')
         self.client = chromadb.PersistentClient(path=self.db_path)
-        self.ollama_ef = make_ollama_ef()
+        self.embedding_ef = make_embedding_ef()
         self._siblings = {}
         self._parent_index_cache = None
         have = {c.name for c in self.client.list_collections()}
@@ -93,12 +93,12 @@ class JebAgent:
             if 'attacks_rebuild_backup' in have:
                 raise ValueError('Finding migration pending; finish project rebuild before writing findings.')
             self.collection = self.client.create_collection(
-                collection_name, embedding_function=self.ollama_ef,
-                metadata=embedding_profile(self.ollama_ef))
+                collection_name, embedding_function=self.embedding_ef,
+                metadata=embedding_profile(self.embedding_ef))
         else:
             self.collection = self.client.get_collection(
                 collection_name, embedding_function=None if collection_name in LOOKUP_COLLECTIONS
-                else self.ollama_ef)
+                else self.embedding_ef)
         if collection_name in COLLECTIONS:
             self._validate(self.collection)
 
@@ -108,7 +108,7 @@ class JebAgent:
             raise ValueError(f"Collection '{collection.name}' needs a rebuild. "
                              'Run jeb_import with command=rebuild; '
                              'retain all original captures and the database.')
-        self.ollama_ef.expected_digest = (collection.metadata or {}).get('embedding_model_digest', '')
+        self.embedding_ef.expected_digest = (collection.metadata or {}).get('embedding_model_digest', '')
 
     def sibling(self, name):
         if name == self.collection_name:
@@ -116,7 +116,7 @@ class JebAgent:
         if name not in self._siblings:
             have = {c.name for c in self.client.list_collections()}
             col = self.client.get_collection(
-                name, embedding_function=None if name in LOOKUP_COLLECTIONS else self.ollama_ef
+                name, embedding_function=None if name in LOOKUP_COLLECTIONS else self.embedding_ef
             ) if name in have else None
             if col is not None and name in COLLECTIONS:
                 self._validate(col)
@@ -313,7 +313,7 @@ class JebAgent:
         if not old['ids']:
             meta.update(identifier_state='pending', event_id=m.get('event_id', ''))
             self.collection.upsert(ids=[doc_id], documents=[document], metadatas=[meta],
-                                   embeddings=embed_documents(self.ollama_ef, [text]))
+                                   embeddings=embed_documents(self.embedding_ef, [text]))
         try:
             sync_identifiers(self.client, 'attacks', [{'id': doc_id,
                               'identifier_pairs': pairs_for_finding(data)}], replace=True)

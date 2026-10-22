@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{
+    // --copy path, relative to the global config. For linked installs, preserve
+    // the real checkout path written by install.sh and copy only these options.
+    "package": "./packages/jebediah",
+    "options": {
+      "embedding": {
+        "preset": "litellm-qwen3-embedding-8b",
+        "providerID": "litellm",
+        "model": "qwen/qwen3-embedding-8b",
+        "modelRevision": "REPLACE-WITH-PINNED-DEPLOYMENT-REVISION",
+        "dimensions": 4096,
+        "timeoutSeconds": 120,
+        // Set false if the upstream only serves native 4096d and rejects dimensions.
+        "sendDimensions": true,
+      },
+      "embedBatchDocs": 32,
+      "embedBatchChars": 48000,
+      // No inherited Gemma 0.38 cutoff. Calibrate on Qwen before setting maxDistance.
+    },
+  }],
+}

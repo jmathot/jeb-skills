@@ -1,16 +1,13 @@
-// Translate opencode.json plugin `options` into the JEB_* environment variables the
-// Python engine reads. Two tiers:
-//   - query-time knobs: safe to change anytime (distance cutoffs, depth presets,
-//     candidate ceiling).
-//   - index-defining knobs: embedding model/dimensions/scheme, distance metric,
-//     ollama URL. Changing these changes the recorded embedding profile, so queries
-//     against an existing database will fail until it is rebuilt (jeb_rebuild). We
-//     fold them into `indexSignature` so setup() can warn when one changes.
+// Model semantics are shared with Python; connection details never enter index identity.
+import profiles from "./embedding-profiles.json" with { type: "json" }
+export { profiles }
 
 export interface BuiltConfig {
   env: Record<string, string>
   indexSignature: string
   warnings: string[]
+  providerID?: string
+  apiKeyEnv?: string
 }
 
 type Options = Record<string, any> | undefined
@@ -24,15 +21,13 @@ const DEPTH_FIELDS: Record<string, string> = {
   rawChars: "RAW_CHARS",
 }
 
-// What the engine uses when an index-defining option is unset. The signature is
-// built from effective values so an option that merely restates a default is not
-// reported as a change.
-export const INDEX_DEFAULTS: Record<string, string> = {
-  embeddingModel: "embeddinggemma-2:latest",
-  embeddingScheme: "embeddinggemma2-v1-titled-768d",
-  distanceMetric: "cosine",
-  ollamaUrl: "http://localhost:11434/api/embeddings",
-  embeddingDimensions: "768",
+export function validateBaseURL(value: string): string {
+  if (typeof value !== "string") throw new Error("embedding.baseURL must be a string")
+  const url = new URL(value)
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("embedding.baseURL must be an HTTP(S) URL without credentials, query, or fragment")
+  }
+  return value.replace(/\/+$/, "")
 }
 
 export function buildConfig(options: Options): BuiltConfig {
@@ -40,29 +35,64 @@ export function buildConfig(options: Options): BuiltConfig {
   const warnings: string[] = []
   const o = options ?? {}
 
-  // --- Index-defining (rebuild-affecting) ---
-  const effective: Record<string, string> = { ...INDEX_DEFAULTS }
-  const setIndex = (key: string, envName: string, value: unknown, cast = String) => {
-    if (value === undefined || value === null || value === "") return
-    env[envName] = cast(value)
-    effective[key] = env[envName]
+  const e = o.embedding ?? {}
+  if (typeof e !== "object" || Array.isArray(e)) throw new Error("embedding must be an options object")
+  const preset = e.preset ?? "ollama-embeddinggemma2"
+  if (!Object.hasOwn(profiles, preset)) throw new Error(`Unknown embedding preset: ${preset}`)
+  const profile = profiles[preset as keyof typeof profiles]
+  const dimensions = e.dimensions ?? (profile.backend === "ollama" ? o.embeddingDimensions : undefined) ?? profile.dimensions
+  if (!Number.isInteger(dimensions) || dimensions < profile.minDimensions || dimensions > profile.dimensions ||
+      (profile.allowedDimensions.length && !(profile.allowedDimensions as number[]).includes(dimensions))) {
+    throw new Error(`Unsupported embedding dimensions for ${preset}`)
   }
-  setIndex("embeddingModel", "JEB_EMBEDDING_MODEL", o.embeddingModel)
-  setIndex("embeddingScheme", "JEB_EMBEDDING_SCHEME", o.embeddingScheme)
-  setIndex("distanceMetric", "JEB_DISTANCE_METRIC", o.distanceMetric)
-  setIndex("ollamaUrl", "JEB_OLLAMA_URL", o.ollamaUrl)
-  if (Number.isInteger(o.embeddingDimensions)) {
-    setIndex("embeddingDimensions", "JEB_EMBEDDING_DIMENSIONS", o.embeddingDimensions)
-  } else if (o.embeddingDimensions != null) {
-    warnings.push(`embeddingDimensions must be an integer; ignoring ${JSON.stringify(o.embeddingDimensions)}.`)
+  const model = e.model ?? (profile.backend === "ollama" ? o.embeddingModel : undefined) ?? profile.model
+  if (typeof model !== "string" || !model.trim()) throw new Error("embedding.model must be non-empty")
+  const contextTokens = e.contextTokens ?? profile.contextTokens
+  if (!Number.isInteger(contextTokens) || contextTokens < 1 || contextTokens > profile.contextTokens) {
+    throw new Error("embedding.contextTokens must be positive and no greater than the model limit")
   }
-
-  // ollamaTimeoutSeconds is runtime-only, not part of the index profile.
-  if (o.ollamaTimeoutSeconds != null) {
-    const n = Number(o.ollamaTimeoutSeconds)
-    if (Number.isFinite(n) && n > 0) env.JEB_OLLAMA_TIMEOUT = String(Math.trunc(n))
-    else warnings.push(`ollamaTimeoutSeconds must be a positive number; ignoring ${JSON.stringify(o.ollamaTimeoutSeconds)}.`)
+  if (o.embeddingScheme && o.embeddingScheme !== profile.scheme) {
+    throw new Error("Remove the legacy embeddingScheme override; the preset selects the scheme. Rebuild existing projects.")
   }
+  if (o.distanceMetric && o.distanceMetric !== "cosine") throw new Error("Only cosine distance is supported")
+  const revision = e.modelRevision ?? ""
+  if (profile.backend === "ollama" && revision) throw new Error("Ollama uses its installed model digest; modelRevision is a LiteLLM option")
+  if (typeof revision !== "string" || (profile.backend === "litellm" && !revision.trim())) {
+    throw new Error("LiteLLM requires embedding.modelRevision; pin the gateway deployment and disable cross-model fallback")
+  }
+  const timeout = e.timeoutSeconds ?? o.ollamaTimeoutSeconds ?? 120
+  if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) throw new Error("embedding.timeoutSeconds must be positive")
+  if (e.sendDimensions !== undefined && typeof e.sendDimensions !== "boolean") throw new Error("embedding.sendDimensions must be boolean")
+  if (profile.backend !== "ollama" && (e.keepAlive !== undefined || o.ollamaUrl || o.ollamaTimeoutSeconds || o.embeddingModel || o.embeddingDimensions)) {
+    throw new Error("Ollama options do not apply to a LiteLLM preset")
+  }
+  for (const key of ["providerID", "apiKeyEnv"]) {
+    if (e[key] !== undefined && (typeof e[key] !== "string" || !e[key].trim())) throw new Error(`embedding.${key} must be non-empty`)
+  }
+  if (e.apiKey !== undefined) throw new Error("Use embedding.apiKeyEnv or an OpenCode provider connection, not a stored API key")
+  if (e.keepAlive !== undefined && typeof e.keepAlive !== "string") throw new Error("embedding.keepAlive must be a string")
+  const effective = { preset, model, dimensions, contextTokens, scheme: profile.scheme, revision, normalization: "l2-v1", metric: "cosine" }
+  Object.assign(env, {
+    JEB_EMBEDDING_PRESET: preset,
+    JEB_EMBEDDING_MODEL: model,
+    JEB_EMBEDDING_SCHEME: profile.scheme,
+    JEB_EMBEDDING_DIMENSIONS: String(dimensions),
+    JEB_EMBEDDING_CONTEXT_TOKENS: String(contextTokens),
+    JEB_EMBEDDING_REVISION: revision,
+    JEB_DISTANCE_METRIC: "cosine",
+    JEB_EMBEDDING_TIMEOUT: String(timeout),
+    JEB_EMBEDDING_SEND_DIMENSIONS: String(e.sendDimensions ?? true),
+    JEB_OLLAMA_KEEP_ALIVE: e.keepAlive ?? "30m",
+    // Explicit empties prevent stale shell credentials/headers leaking between providers.
+    JEB_EMBEDDING_API_KEY: "",
+    JEB_EMBEDDING_HEADERS: "{}",
+    JEB_EMBEDDING_BASE_URL: "",
+    JEB_OLLAMA_URL: "",
+  })
+  const baseURL = e.baseURL ?? o.ollamaUrl ?? (profile.backend === "ollama" ? "http://localhost:11434" : undefined)
+  if (baseURL !== undefined) env.JEB_EMBEDDING_BASE_URL = validateBaseURL(baseURL)
+  if (profile.backend === "litellm" && !baseURL && !e.providerID) throw new Error("LiteLLM needs embedding.providerID or embedding.baseURL")
+  if (profile.backend === "ollama" && e.providerID) throw new Error("embedding.providerID is only supported for LiteLLM")
 
   // --- Query-time (safe) ---
   const maxDistance = o.maxDistance ?? {}
@@ -80,7 +110,7 @@ export function buildConfig(options: Options): BuiltConfig {
     else warnings.push(`candidateCeiling must be a positive integer; ignoring ${JSON.stringify(o.candidateCeiling)}.`)
   }
 
-  // Embedding batch budget: affects how many Ollama round trips an import makes,
+  // Embedding batch budget: affects how many embedding round trips an import makes,
   // not the vectors themselves, so it needs no rebuild.
   for (const [key, envName] of [
     ["embedBatchDocs", "JEB_EMBED_BATCH_DOCS"],
@@ -104,9 +134,6 @@ export function buildConfig(options: Options): BuiltConfig {
     }
   }
 
-  const indexSignature = Object.keys(effective)
-    .sort()
-    .map((key) => `${key}=${effective[key]}`)
-    .join("|")
-  return { env, indexSignature, warnings }
+  const indexSignature = JSON.stringify(effective)
+  return { env, indexSignature, warnings, providerID: e.providerID, apiKeyEnv: e.apiKeyEnv }
 }

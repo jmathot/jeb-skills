@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import time
+from policy import configure_live
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TESTS)
@@ -37,6 +38,11 @@ def capture_key():
     engine change keyed only on the capture would silently test a stale import.
     """
     h = hashlib.sha256()
+    for key in ('JEB_EMBEDDING_PRESET', 'JEB_EMBEDDING_MODEL', 'JEB_EMBEDDING_DIMENSIONS',
+                'JEB_EMBEDDING_REVISION', 'JEB_EMBEDDING_CONTEXT_TOKENS', 'JEB_EMBEDDING_SCHEME'):
+        h.update(f'{key}={os.environ.get(key, "")}'.encode())
+    with open(os.path.join(REPO, 'src', 'embedding-profiles.json'), 'rb') as handle:
+        h.update(handle.read())
     with open(CAPTURE, 'rb') as handle:
         h.update(handle.read())
     import_dir = os.path.join(ENGINE, 'import')
@@ -59,6 +65,7 @@ def manifest():
 
 def run_import(project, fresh=False):
     """Import the capture into `project`. Returns elapsed seconds."""
+    configure_live()
     if fresh and os.path.isdir(project):
         shutil.rmtree(project)
     os.makedirs(project, exist_ok=True)
@@ -76,6 +83,7 @@ def run_import(project, fresh=False):
 
 def query(args, project=None, check=True):
     """Run the query CLI and return its parsed JSON envelope."""
+    configure_live()
     project = project or project_dir()
     proc = subprocess.run(
         [interpreter(), os.path.join(ENGINE, 'query', 'agent_interface.py')]
@@ -92,6 +100,7 @@ def query(args, project=None, check=True):
 
 def importer(args, project=None):
     """Run the import CLI (status/export/rebuild) and return (rc, stdout)."""
+    configure_live()
     project = project or project_dir()
     proc = subprocess.run(
         [interpreter(), os.path.join(ENGINE, 'import', 'import_project.py')]
@@ -102,6 +111,7 @@ def importer(args, project=None):
 
 def ensure(fresh=False, quiet=False):
     """Return the project dir, importing the capture if needed."""
+    configure_live()
     project = project_dir()
     marker = os.path.join(project, '.imported')
     if fresh or not os.path.exists(marker):
@@ -128,6 +138,7 @@ def main():
     parser.add_argument('--path', action='store_true')
     args = parser.parse_args()
     if args.path:
+        configure_live()
         print(project_dir())
         return
     ensure(fresh=args.fresh)

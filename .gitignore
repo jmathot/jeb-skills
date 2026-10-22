@@ -8,6 +8,9 @@ engine/.venv/
 
 # Node / plugin dependencies
 node_modules/
+dist/
+tests/.work/
+tests/.ts-build.*/
 
 # Pipeline output / project data
 chroma_db/

@@ -20,10 +20,11 @@ import sys
 import time
 
 import fixture
+from policy import configure_live, BASELINE_NAME
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
-BASELINE = os.path.join(TESTS, 'baseline', 'perf.json')
-DIGESTS = os.path.join(TESTS, 'baseline')
+DIGESTS = os.path.join(TESTS, 'baseline', BASELINE_NAME)
+BASELINE = os.path.join(DIGESTS, 'perf.json')
 GATED = ('graph', 'edges', 'exchanges')
 
 sys.path.insert(0, os.path.join(fixture.ENGINE, 'import'))
@@ -103,9 +104,9 @@ def instrument(counters):
             counters.count(collection, name, f'chroma.{name}')
     import vector_store
     import retrieval
-    counters.count(embedding, 'embed_documents', 'ollama.embed_documents')
-    counters.count(vector_store, 'embed_documents', 'ollama.embed_documents')
-    counters.count(retrieval, 'embed_query', 'ollama.embed_query')
+    counters.count(embedding, 'embed_documents', 'embedding.documents')
+    counters.count(vector_store, 'embed_documents', 'embedding.documents')
+    counters.count(retrieval, 'embed_query', 'embedding.query')
     counters.count(distill, 'BeautifulSoup', 'html.parse')
     # import_project binds these at import time, so patch its own references.
     for owner, name in [(import_project, 'annotate_features'),
@@ -125,6 +126,7 @@ def instrument(counters):
 
 def cold_import(counters, project):
     """Run ingest + rebuild in-process on a scratch project directory."""
+    configure_live()
     import chromadb
     import_project = instrument(counters)
     from storage import lookup_collection, writer_lock
@@ -227,6 +229,8 @@ def query_latency(queries):
 
 def export_and_gate(project, report_dir, update):
     """Export the gated collections and compare against the committed digests."""
+    if update:
+        os.makedirs(DIGESTS, exist_ok=True)
     ok = True
     for name in GATED:
         out = os.path.join(report_dir, f'{name}.ndjson')
@@ -268,6 +272,7 @@ def show(label, got, base, unit=''):
 
 
 def main():
+    configure_live()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--update-baseline', action='store_true')
     parser.add_argument('--skip-import', action='store_true',

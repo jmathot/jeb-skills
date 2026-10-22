@@ -1,7 +1,7 @@
 """Semantic-only retrieval. Cosine distances are not confidence scores."""
 import os
 
-from embedding import embed_query
+from embedding import embed_query, PRESET
 import ontology
 
 
@@ -15,8 +15,8 @@ def _env_float(name, default):
 # Query-time knobs (safe to tune without a rebuild); the plugin supplies the
 # JEB_* env vars from opencode.json plugin options.
 DEFAULT_MAX_DISTANCE = {
-    'graph': _env_float('JEB_MAX_DISTANCE_GRAPH', 0.38),
-    'attacks': _env_float('JEB_MAX_DISTANCE_ATTACKS', 0.38),
+    'graph': _env_float('JEB_MAX_DISTANCE_GRAPH', 0.38 if PRESET == 'ollama-embeddinggemma2' else None),
+    'attacks': _env_float('JEB_MAX_DISTANCE_ATTACKS', 0.38 if PRESET == 'ollama-embeddinggemma2' else None),
 }
 
 # Neighbours summarised per result.
@@ -39,7 +39,7 @@ def search(agent, query, n_results=8, where=None, where_document=None,
     # Cheap local count, and it avoids an Ollama round trip on an empty project.
     if not agent.collection.count():
         return {'results': [], 'fallback': [], 'diagnostics': diagnostics}
-    vector = embed_query(agent.ollama_ef, agent.collection_name, query)
+    vector = embed_query(agent.embedding_ef, agent.collection_name, query)
     kwargs = {'query_embeddings': [vector], 'n_results': candidate_k,
               'include': ['metadatas', 'distances']}
     if where:

@@ -1,6 +1,9 @@
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { Plugin } from "@opencode/plugin"
-import { runEngine } from "./engine.js"
+import type { ToolContext } from "@opencode/plugin/promise/tool"
+import type { BuiltConfig } from "./config.js"
+import { embeddingEnv } from "./connection.js"
+import { runEngine, type RunResult } from "./engine.js"
 import { importScript, queryScript, visualizeScript } from "./paths.js"
 
 // The engine keeps the original CLI's command tree. We expose it as OpenCode tools
@@ -21,6 +24,21 @@ const enumStr = (values: string[], description: string): SchemaProp => ({ type: 
 
 const dbPath = str("Project database path; defaults to ./chroma_db in the current project directory.")
 const projectDir = str("Engagement project directory (the one given to jeb_import); the database is <project_dir>/chroma_db. Alternative to db_path.")
+
+// Query/status already emit JSON. Maintenance and visualization CLIs emit human
+// progress text (or nothing for export); keep the native tool contract JSON-only.
+export function engineContent(result: RunResult): string {
+  const output = result.stdout.trim()
+  const stderr = result.stderr.trim()
+  let parsed: Record<string, unknown> | undefined
+  try {
+    const value = JSON.parse(output)
+    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value
+  } catch { /* progress output, not a JSON response */ }
+  if (result.code === 0) return parsed ? output : JSON.stringify({ ok: true, output })
+  return JSON.stringify({ ...parsed, error: parsed?.error ?? "Engine command failed", exit_code: result.code,
+    ...(parsed ? {} : { output }), ...(stderr ? { stderr } : {}) })
+}
 
 // `project_dir` is sugar for `--db-path <project_dir>/chroma_db`; the engine only sees db_path.
 export function resolveDbPath(input: Record<string, any>): Record<string, any> {
@@ -129,23 +147,42 @@ export function buildArgv(input: Record<string, any>, opts: BuildOpts): string[]
 
 export async function registerTools(
   ctx: Plugin.Context,
-  python: string,
-  env: Record<string, string>,
+  python: string | (() => Promise<string>),
+  config: BuiltConfig,
 ): Promise<void> {
   const cwd = String(ctx.location.directory)
 
   const call = async (
     script: string,
     argv: string[],
-    context: { signal: AbortSignal },
+    context: ToolContext,
+    input: Record<string, any>,
   ): Promise<{ content: string }> => {
+    const project = resolve(cwd, input.project_dir || ".")
+    const db = input.db_path ? resolve(cwd, input.db_path) : join(project, "chroma_db")
+    const resources = [script === visualizeScript ? resolve(cwd, input.out) :
+      input.command === "export" ? resolve(cwd, input.output) : db]
+    const writes = script === visualizeScript || (script === importScript && input.command !== "status") || input.command === "record-attack"
+    // Permission rejections must propagate, not be converted to successful output.
+    const assert = (action: string, paths: string[]) => ctx.permission.assert({
+      sessionID: context.sessionID, agent: context.agent,
+      source: { type: "tool", messageID: context.messageID, id: context.id },
+      action, resources: paths, save: paths,
+    })
+    await assert("read", [db, ...[input.xml_file, input.request_file, input.response_file].filter(Boolean).map((p) => resolve(cwd, p))])
+    if (writes) await assert("edit", resources)
+    const embeds = (script === importScript && ["import", "rebuild"].includes(input.command)) ||
+      (script === queryScript && ["search", "similar", "record-attack"].includes(input.command))
+    if (embeds && config.env.JEB_EMBEDDING_PRESET !== "ollama-embeddinggemma2") {
+      await assert("jeb.embed", [config.providerID ?? config.env.JEB_EMBEDDING_BASE_URL])
+    }
     try {
-      const res = await runEngine({ python, script, argv, cwd, env, signal: context.signal })
-      const out = res.stdout.trim()
-      const err = res.stderr.trim()
-      if (res.code === 0 && out) return { content: out }
-      // Failures keep both streams: the engine's JSON error is on stdout, tracebacks on stderr.
-      return { content: [out, err, `(exit code ${res.code})`].filter(Boolean).join("\n") }
+      context.signal.throwIfAborted()
+      const env = embeds ? await embeddingEnv(ctx, config) : config.env
+      const executable = typeof python === "string" ? python : await python()
+      context.signal.throwIfAborted()
+      const res = await runEngine({ python: executable, script, argv, cwd, env, signal: context.signal })
+      return { content: engineContent(res) }
     } catch (err) {
       return { content: JSON.stringify({ error: `could not run engine: ${(err as Error).message}` }) }
     }
@@ -154,7 +191,7 @@ export async function registerTools(
   await ctx.tool.transform((editor) => {
     editor.namespace({
       name: "jeb",
-      description: "J.E.B.E.D.I.A.H. — investigate an imported Burp Suite capture (local Chroma + Ollama RAG).",
+      description: "J.E.B.E.D.I.A.H. — investigate an imported Burp Suite capture (local Chroma with configured embeddings).",
     })
 
     // ---- jeb query <command> ----
@@ -240,12 +277,18 @@ export async function registerTools(
         if (!(command in QUERY_FLAGS)) return { content: JSON.stringify({ error: `unknown query command: ${command}` }) }
         try {
           const input = resolveDbPath(raw)
+          if (["endpoint", "get", "similar", "identifier", "evidence", "graph"].includes(command) && !input.target) {
+            throw new Error(`command=${command} requires target`)
+          }
+          if (command === "record-attack" && (!input.vuln_class || !input.endpoint)) {
+            throw new Error("command=record-attack requires vuln_class and endpoint")
+          }
           const argv = [command, ...buildArgv(input, {
             positionals: QUERY_POSITIONALS[command],
             allowed: QUERY_FLAGS[command],
             flagOverrides: { collection: "--in" },
           })]
-          return call(queryScript, argv, context)
+          return call(queryScript, argv, context, input)
         } catch (err) {
           return { content: JSON.stringify({ error: (err as Error).message }) }
         }
@@ -285,6 +328,9 @@ export async function registerTools(
         const command = String(input.command)
         if (!(command in IMPORT_FLAGS)) return { content: JSON.stringify({ error: `unknown import command: ${command}` }) }
         try {
+          if (command === "import" && !input.xml_file) throw new Error("command=import requires xml_file")
+          if (command === "abandon" && !input.capture_id) throw new Error("command=abandon requires capture_id")
+          if (command === "export" && (!input.collection || !input.output)) throw new Error("command=export requires collection and output")
           const argv = [
             command,
             ...buildArgv(input, {
@@ -293,7 +339,7 @@ export async function registerTools(
               paired: { auto_detect: ["--auto-detect-auth-cookies", "--no-auto-detect-auth-cookies"] },
             }),
           ]
-          return call(importScript, argv, context)
+          return call(importScript, argv, context, input)
         } catch (err) {
           return { content: JSON.stringify({ error: (err as Error).message }) }
         }
@@ -319,7 +365,7 @@ export async function registerTools(
       },
       execute: async (input: any, context) => {
         const argv = buildArgv(input, { positionals: [] })
-        return call(visualizeScript, argv, context)
+        return call(visualizeScript, argv, context, input)
       },
     })
   })

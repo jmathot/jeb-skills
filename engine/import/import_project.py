@@ -11,7 +11,7 @@ import chromadb
 import build_graph
 import distill as d
 from ontology import ONTOLOGY_VERSION
-from embedding import embedding_profile, make_ollama_ef
+from embedding import embedding_profile, make_embedding_ef
 from parse import hydrate_item, iter_items, storable
 from storage import (LOOKUP_COLLECTIONS, batches, digest, lookup_collection, put_records,
                      scan, delete_ids, sync_edges, sync_identifiers, writer_lock, update_project)
@@ -197,7 +197,7 @@ def loss_ledger(annotated):
 
 def rebuild_project(client, captures, config, force=False):
     exchanges = lookup_collection(client, 'exchanges')
-    ef = make_ollama_ef()
+    ef = make_embedding_ef()
     profile = embedding_profile(ef)
     version = digest([config, FEATURE_VERSION, IDENTIFIER_VERSION, ONTOLOGY_VERSION, profile])
     names = {c.name for c in client.list_collections()}

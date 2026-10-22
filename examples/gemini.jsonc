@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{
+    // --copy path. Linked installs must keep the real path written by install.sh.
+    "package": "./packages/jebediah",
+    "options": {
+      "embedding": {
+        "preset": "litellm-gemini-embedding-2",
+        "providerID": "litellm",
+        "model": "gemini-embedding-2",
+        "modelRevision": "REPLACE-WITH-PINNED-DEPLOYMENT-REVISION",
+        "dimensions": 3072,
+        "timeoutSeconds": 120,
+      },
+    },
+  }],
+}
