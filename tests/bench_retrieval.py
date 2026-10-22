@@ -36,9 +36,28 @@ def entity_names(manifest):
     return out
 
 
+def anchor_refs():
+    """route node id -> route ref, so a section or form answers as its page."""
+    out, offset = {}, 0
+    while True:
+        page = fixture.query(['map', '--limit', '300', '--offset', str(offset), '--include-static'])
+        for row in page['results']:
+            if row.get('node_type') == 'route':
+                out[row['id']] = (f"{row.get('method', '')} {row.get('scheme', '')}://{row.get('host', '')}"
+                                  f":{row.get('port', '')}{row.get('endpoint_template', '')}")
+        offset += len(page['results'])
+        if not page.get('has_more') or not page['results']:
+            return out
+
+
+ANCHORS = {}
+
+
 def result_ref(row, sigs):
     """The relevance key a result answers to."""
     kind = row.get('node_kind')
+    if kind in ('section', 'form') and row.get('anchor_id') in ANCHORS:
+        return ANCHORS[row['anchor_id']]
     if kind == 'entity':
         return 'entity:' + sigs.get(row.get('schema_sig', ''), '?')
     if kind == 'auth_model':
@@ -233,14 +252,17 @@ def main():
     print('tier B: retrieval quality')
 
     # A typo in a relevance label would silently depress every metric.
+    origin = '{scheme}://{host}:{port}'.format(**manifest['origin'])
     refs = {r['ref'] for r in manifest['routes']} \
-        | {'entity:' + e['name'] for e in manifest['entities']} | {'auth_model'}
+        | {'entity:' + e['name'] for e in manifest['entities']} | {'auth_model'} \
+        | {f"GET {origin}{t}" for t in manifest['graph']['stub_routes']}
     unknown = sorted({t for q in manifest['queries'] for t in q['relevant']} - refs)
     if unknown:
         print(f'  FAIL query set references unknown targets: {unknown[:6]}')
         sys.exit(1)
 
     sigs = entity_names(manifest)
+    ANCHORS.update(anchor_refs())
     semantic = run_semantic(manifest, sigs, args.verbose)
     keyword = run_keyword(manifest, args.verbose)
     screening = run_screening(manifest, args.verbose)
@@ -267,6 +289,10 @@ def main():
         failures.append(f"depth presets not monotone: normal recall "
                         f"{semantic['normal']['recall']} < quick "
                         f"{semantic['quick']['recall']}")
+    late = [q['q'] for spec, q in zip(manifest['queries'], semantic['normal']['per_query'])
+            if spec.get('needle') and q['mrr'] < 1 / 3 - 1e-9]
+    if late:
+        failures.append(f'needle queries not in the top 3 at depth=normal: {late}')
     if not keyword['exact_agreement']:
         failures.append('keyword search disagrees with the independent oracle: '
                         + str([r for r in keyword['needles']

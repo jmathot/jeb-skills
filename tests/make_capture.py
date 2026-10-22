@@ -84,11 +84,15 @@ FOOT = ('<footer><nav><a href="/tos">Terms</a><a href="/priv">Privacy</a></nav>'
         '<p>(c) Example Corp</p></footer>')
 
 
+CHROME_TOP = '<div class="topbar"><span>Acme Quantum Gateway console</span><span>Status: all systems nominal</span></div>'
+CHROME_BOTTOM = '<div class="legal"><span>Powered by Acme Quantum Gateway</span><span>Registered office: 1 Example Plaza</span></div>'
+
+
 def page(title, main):
     return (f'<!doctype html><html><head><title>{title}</title>'
             f'<link rel=stylesheet href=/static/app.css></head><body>'
-            f'<header><nav><ul>{NAV}</ul></nav></header>'
-            f'<main>{main}</main>{FOOT}</body></html>')
+            f'{CHROME_TOP}<header><nav><ul>{NAV}</ul></nav></header>'
+            f'<main>{main}</main>{FOOT}{CHROME_BOTTOM}</body></html>')
 
 
 def table(n, label):
@@ -362,6 +366,137 @@ def query_set():
     ]
 
 
+# --- knowledge-graph pages ------------------------------------------------
+# Shapes the graph pipeline exists for. CHROME_* (defined with page()) is
+# div-based, so only repeated-block removal can strip it.
+AWS_KEY = 'AKIAQ7XJ2MZP4TNW5RBD'
+WIDGET_NEEDLE = 'cobalt-widget-lantern'
+WIDGET_TEXT = ('<div class="promo-widget"><div class="promo-title">Seasonal widget programme</div><div>'
+               + ' '.join(f'Widget programme clause {i}: participants receive {WIDGET_NEEDLE if i == 3 else "standard"} '
+                          f'allocation number {i} under the seasonal terms.' for i in range(48))
+               + '</div></div>')
+
+
+def div_page(title, main, scripts=()):
+    tags = ''.join(f'<script src="{src}"></script>' for src in scripts)
+    return (f'<!doctype html><html><head><title>{title}</title></head><body>'
+            f'{CHROME_TOP}<div id="content">{main}</div>{CHROME_BOTTOM}{tags}</body></html>')
+
+
+def bundle_minified():
+    """>2 MB minified bundle; a credential and an endpoint sit past 2 MB."""
+    head = ('/*! react v18.2.0 */\n(function(){var a=function(){return fetch("/api/orders",{method:"POST"})};'
+            'var b=function(){return fetch("/api/internal/ping")};})();\n')
+    pad = ''.join(f'var v{i}="{"abcdefghij" * 6}{i}";' for i in range(34000))
+    tail = (f'\nvar late=function(){{return fetch("/api/late/export")}};var awsKey="{AWS_KEY}";'
+            '//# sourceMappingURL=big.min.js.map\n')
+    return head + pad + tail
+
+
+def bundle_dev():
+    return ('/*! lodash v4.17.21 */\n__webpack_modules__ = {\n'
+            '"./src/api/reports.js": function(module){ return fetch("/api/dev/reports/summary"); },\n'
+            '"./src/ui/button.js": function(module){ return "button"; }\n};\n'
+            '//# sourceMappingURL=dev.bundle.js.map\n')
+
+
+def dev_map():
+    return json.dumps({'version': 3, 'file': 'dev.bundle.js',
+                       'sources': ['./src/api/reports.js', './src/ui/button.js'],
+                       'sourcesContent': ['export const load = () => fetch("/api/dev/reports/summary");',
+                                          'export default "button";']})
+
+
+def add_graph_pages(cap, note_route):
+    """Emit the graph-shape pages and return the manifest `graph` block."""
+    def html_get(path, body, authed=True, anon=None):
+        cap.add('GET', path, 200, 'HTML', request_text('GET', path, authed),
+                response_text(200, 'text/html; charset=utf-8', body))
+        note_route('GET', path, ['text/html'], authed, anon)
+
+    bundles = ['/static/big.min.js']
+    # 1. div-only page, no headings, over the page budget; needle deep inside
+    panels = ''.join(
+        f'<div class="panel"><div class="panel-title">Handbook chapter {i}</div><div>'
+        + ' '.join(f'Chapter {i} paragraph {j} discusses routine facility procedure number {i * 100 + j}.'
+                   for j in range(14))
+        + (' The quarantine-escrow-ledger must be reconciled before release.' if i == 7 else '')
+        + '</div></div>' for i in range(12))
+    html_get('/docs/handbook', div_page('Operations handbook', panels, bundles))
+    # 2. flat text with line breaks
+    flat = '<br>'.join(f'Log line {i}: the courier depot reported manifest {i * 7} processed.'
+                       + (' Gravel-harbour-transfer flagged for review.' if i == 41 else '')
+                       for i in range(90))
+    html_get('/notes/flat', div_page('Courier notes', f'<div>{flat}</div>', bundles))
+    # 3. listing of repeated cards linking to an observed route
+    cards = ''.join(f'<div class="card"><h4>Catalog item {i}</h4><p>Catalog entry {i} is a stock product '
+                    f'with enough descriptive words to count as content.</p>'
+                    f'<a href="/api/products/{1040 + i % 5}">details</a></div>' for i in range(30))
+    html_get('/catalog', div_page('Catalog', f'<div id="grid">{cards}</div>', bundles))
+    # 4. hydration page: content only in __NEXT_DATA__, shape shared with an API route
+    order = json.loads(body_for('order', 0))
+    state = {'props': {'pageProps': {'order': order, 'banner': 'Zephyr-hydration-gizmo launch'}}}
+    html_get('/app/home', div_page(
+        'App', '<div id="__next"></div><script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps(state) + '</script>', bundles))
+    # 5. three pages sharing one long widget
+    for n in 'abc':
+        html_get(f'/promo/{n}', div_page(f'Promo {n}', f'<h1>Promo {n}</h1><p>Unique offer text for page {n}.</p>' + WIDGET_TEXT))
+    # 6. form whose action resolves to an observed route
+    html_get('/support', div_page(
+        'Support', '<h1>Contact support</h1><form action="/api/orders" method="post">'
+        '<input name="subject"><textarea name="body"></textarea><input name="order_ref">'
+        '<button>Send</button></form>'))
+
+    # bundles and their maps
+    min_js = bundle_minified()
+    cap.add('GET', bundles[0], 200, 'script', request_text('GET', bundles[0], False),
+            response_text(200, 'application/javascript', min_js))
+    note_route('GET', bundles[0], ['application/javascript'], False, None)
+    for path, ctype, body in [('/static/dev.bundle.js', 'application/javascript', bundle_dev()),
+                              ('/static/dev.bundle.js.map', 'application/json', dev_map())]:
+        cap.add('GET', path, 200, 'script', request_text('GET', path, False), response_text(200, ctype, body))
+        note_route('GET', path, [ctype], False, None)
+
+    o = f'{BASE}:{PORT}'
+    return {
+        'aws_key': AWS_KEY,
+        'widget_needle': WIDGET_NEEDLE,
+        'long_pages': [f'GET {o}/docs/handbook', f'GET {o}/notes/flat'],
+        'listing_pages': [f'GET {o}/catalog'],
+        'promo_pages': [f'GET {o}/promo/{n}' for n in 'abc'],
+        'bundle_users': [f'GET {o}/docs/handbook', f'GET {o}/notes/flat', f'GET {o}/catalog', f'GET {o}/app/home'],
+        'bundle': f'GET {o}/static/big.min.js',
+        'edges': [
+            {'src': f'GET {o}/support', 'rel': 'SUBMITS_TO', 'dst': f'POST {o}/api/orders', 'via': 'form'},
+            {'src': f'GET {o}/catalog', 'rel': 'LINKS_TO', 'dst': f'GET {o}/api/products/{{id}}'},
+            {'src': f'GET {o}/docs/handbook', 'rel': 'LOADS', 'dst': f'GET {o}/static/big.min.js'},
+            {'src': f'GET {o}/static/big.min.js', 'rel': 'CALLS', 'dst': f'POST {o}/api/orders'},
+        ],
+        'stub_routes': ['/api/internal/ping', '/api/late/export', '/api/dev/reports/summary'],
+        'chrome_phrases': ['Powered by Acme Quantum Gateway', 'Acme Quantum Gateway console'],
+        'hydration_entity': 'order',
+    }
+
+
+def graph_queries():
+    o = f'{BASE}:{PORT}'
+    return [
+        {'q': 'quarantine escrow ledger must be reconciled before release', 'in': 'graph',
+         'needle': True, 'relevant': {f'GET {o}/docs/handbook': 2}},
+        {'q': 'gravel harbour transfer flagged for review', 'in': 'graph',
+         'needle': True, 'relevant': {f'GET {o}/notes/flat': 2}},
+        {'q': 'zephyr hydration gizmo launch banner', 'in': 'graph',
+         'needle': True, 'relevant': {f'GET {o}/app/home': 2}},
+        {'q': 'contact support form with subject body and order reference', 'in': 'graph',
+         'needle': True, 'relevant': {f'GET {o}/support': 2}},
+        {'q': 'cobalt widget lantern allocation under seasonal terms', 'in': 'graph',
+         'needle': True, 'relevant': {f'GET {o}/promo/a': 2, f'GET {o}/promo/b': 2, f'GET {o}/promo/c': 2}},
+        {'q': 'client bundle that calls a late export endpoint', 'in': 'graph', 'include_static': True,
+         'needle': True, 'relevant': {f'GET {o}/api/late/export': 2, f'GET {o}/static/big.min.js': 1}},
+    ]
+
+
 SCREENED = [
     {'q': 'sql injection in the orders endpoint',
      'expect_rejected': ['sql injection'], 'expect_action': 'removed-terms'},
@@ -525,9 +660,16 @@ def build(out_dir):
     for _ in range(4):
         cap.add('GET', '/api/orders/1040', 200, 'JSON', dup_req, dup_resp)
 
+    # 11. graph-shape pages and client bundles
+    graph_truth = add_graph_pages(cap, note_route)
+
     # --- assemble -------------------------------------------------------
     xml = cap.xml()
     entities, non_entities = expected_entities()
+    # The hydration page embeds an order record, so it also produces that entity.
+    for entity in entities:
+        if entity['name'] == graph_truth['hydration_entity']:
+            entity['produced_by'] = sorted(set(entity['produced_by']) | {f'GET {BASE}:{PORT}/app/home'})
 
     # access_control follows from the authored anonymous outcome
     control = {None: 'unknown', 'data': 'open-data', 'wall': 'soft-auth-wall',
@@ -568,7 +710,8 @@ def build(out_dir):
                     'the stored document, so where_document cannot prefilter it'},
             {'name': 'session_cookie', 'text': 'sid-9f8e7d6c5b4a'},
         ],
-        'queries': query_set(),
+        'queries': query_set() + graph_queries(),
+        'graph': graph_truth,
         'screened': SCREENED,
         'auth_model': {'cookies_set': ['session'], 'cookies_sent': ['session', 'theme'],
                        'mechanisms': ['cookie']},

@@ -1326,6 +1326,57 @@ def html_page_summary(body: str, boilerplate=None, full_text='') -> str:
     return _truncate(" | ".join(bits), HTML_SUMMARY_CAP + 150, 'html.summary')
 
 
+PAYLOAD_NOTES_CAP = 300
+PAYLOAD_OBJECTS_CAP = 12
+
+
+def _payload_objects(text):
+    """The payload and each nested object with 2+ keys (breadth first), as JSON
+    text, so a record embedded in framework state still matches its API schema."""
+    try:
+        root = json.loads(text)
+    except ValueError:
+        return [text]
+    found, queue = [], [(root, 0)]
+    while queue and len(found) < PAYLOAD_OBJECTS_CAP:
+        value, depth = queue.pop(0)
+        if isinstance(value, dict):
+            if len(value) >= 2 or depth == 0:
+                found.append(json.dumps(value, separators=(',', ':')))
+            children = value.values()
+        elif isinstance(value, list):
+            children = value[:3]
+        else:
+            continue
+        if depth < 4:
+            queue.extend((child, depth + 1) for child in children if isinstance(child, (dict, list)))
+    return found
+
+
+def _payload_notes(text):
+    """key=value for short human-readable string leaves of a payload; token-like
+    strings (no spaces, long) are skipped."""
+    try:
+        root = json.loads(text)
+    except ValueError:
+        return []
+    notes = []
+
+    def walk(value, key='', depth=0):
+        if depth > 5 or len(notes) >= 12:
+            return
+        if isinstance(value, dict):
+            for k, v in value.items():
+                walk(v, str(k), depth + 1)
+        elif isinstance(value, list):
+            for v in value[:3]:
+                walk(v, key, depth + 1)
+        elif isinstance(value, str) and 3 <= len(value) <= 80 and (' ' in value or len(value) <= 24):
+            notes.append(f'{key}={value}')
+    walk(root)
+    return notes
+
+
 def page_facts(body: str, boilerplate=None) -> dict:
     """Segmentation of one HTML page for the graph: the text the page node embeds,
     the sections it splits into when it does not fit, and the structured facts
@@ -1350,14 +1401,19 @@ def page_facts(body: str, boilerplate=None) -> dict:
     LEDGER['segments.sections_dropped_by_cap'] += chosen['sections_dropped']
     if chosen['sections']:
         LEDGER['segments.pages_sectioned'] += 1
-    payloads = []
+    payloads, data_notes = [], []
     for text in view['payload_texts']:
-        sig, _summary, keys = structured_schema(text, 'application/json')
-        if sig:
-            payloads.append({'sig': sig, 'keys': keys})
+        for sub in _payload_objects(text):
+            sig, _summary, keys = structured_schema(sub, 'application/json')
+            if sig and all(sig != p['sig'] for p in payloads):
+                payloads.append({'sig': sig, 'keys': keys})
+        data_notes.extend(_payload_notes(text))
     js = jsfacts.compact(jsfacts.js_facts(view['inline_js'])) if view['inline_js'] else None
     full = chosen['text']
     embed = html_page_summary(body, boilerplate, full_text=full)
+    if data_notes:
+        embed = _truncate(embed + ' | data: ' + _truncate('; '.join(dict.fromkeys(data_notes)), PAYLOAD_NOTES_CAP),
+                          HTML_SUMMARY_CAP + PAYLOAD_NOTES_CAP + 40, 'html.summary')
     if chosen['sections'] and chosen['outline']:
         embed = _truncate(embed + " | sections: " + " / ".join(chosen['outline'][:8]), HTML_SUMMARY_CAP + 400, 'html.summary')
     return {'title': view['title'], 'embed': embed, 'full': bool(full),

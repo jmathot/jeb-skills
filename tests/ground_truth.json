@@ -6,9 +6,9 @@
     "port": 443
   },
   "capture": {
-    "items": 296,
-    "bytes": 723149,
-    "sha256": "439cea7482d91cfb957c174248551d0cf88b76497477a3060136e40a506cbf0c"
+    "items": 307,
+    "bytes": 4356218,
+    "sha256": "894487e327bafcb817923989c82729e86d1f388d0328b83f5d82a8840252e7a9"
   },
   "routes": [
     {
@@ -574,6 +574,16 @@
       "anon_allowed": false
     },
     {
+      "ref": "GET https://app.example:443/app/home",
+      "method": "GET",
+      "endpoint_template": "/app/home",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
       "ref": "GET https://app.example:443/audit",
       "method": "GET",
       "endpoint_template": "/audit",
@@ -581,6 +591,16 @@
       "authenticated_ever": true,
       "params": [],
       "access_control": "enforced",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/catalog",
+      "method": "GET",
+      "endpoint_template": "/catalog",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
       "anon_allowed": false
     },
     {
@@ -607,6 +627,16 @@
       "ref": "GET https://app.example:443/dashboard",
       "method": "GET",
       "endpoint_template": "/dashboard",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/docs/handbook",
+      "method": "GET",
+      "endpoint_template": "/docs/handbook",
       "node_kind": "page",
       "authenticated_ever": true,
       "params": [],
@@ -664,6 +694,16 @@
       "anon_allowed": false
     },
     {
+      "ref": "GET https://app.example:443/notes/flat",
+      "method": "GET",
+      "endpoint_template": "/notes/flat",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
       "ref": "GET https://app.example:443/orders",
       "method": "GET",
       "endpoint_template": "/orders",
@@ -697,6 +737,36 @@
       "ref": "GET https://app.example:443/profile",
       "method": "GET",
       "endpoint_template": "/profile",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/promo/a",
+      "method": "GET",
+      "endpoint_template": "/promo/a",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/promo/b",
+      "method": "GET",
+      "endpoint_template": "/promo/b",
+      "node_kind": "page",
+      "authenticated_ever": true,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/promo/c",
+      "method": "GET",
+      "endpoint_template": "/promo/c",
       "node_kind": "page",
       "authenticated_ever": true,
       "params": [],
@@ -764,6 +834,36 @@
       "anon_allowed": false
     },
     {
+      "ref": "GET https://app.example:443/static/big.min.js",
+      "method": "GET",
+      "endpoint_template": "/static/big.min.js",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/static/dev.bundle.js",
+      "method": "GET",
+      "endpoint_template": "/static/dev.bundle.js",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/static/dev.bundle.js.map",
+      "method": "GET",
+      "endpoint_template": "/static/dev.bundle.js.map",
+      "node_kind": "endpoint",
+      "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
       "ref": "GET https://app.example:443/static/icons.svg",
       "method": "GET",
       "endpoint_template": "/static/icons.svg",
@@ -789,6 +889,16 @@
       "endpoint_template": "/static/vendor.js",
       "node_kind": "endpoint",
       "authenticated_ever": false,
+      "params": [],
+      "access_control": "unknown",
+      "anon_allowed": false
+    },
+    {
+      "ref": "GET https://app.example:443/support",
+      "method": "GET",
+      "endpoint_template": "/support",
+      "node_kind": "page",
+      "authenticated_ever": true,
       "params": [],
       "access_control": "unknown",
       "anon_allowed": false
@@ -1029,6 +1139,7 @@
       ],
       "produced_by": [
         "GET https://app.example:443/api/orders/{id}",
+        "GET https://app.example:443/app/home",
         "POST https://app.example:443/api/orders"
       ],
       "consumed_by": [
@@ -1368,8 +1479,116 @@
         "POST https://app.example:443/api/products": 2,
         "POST https://app.example:443/api/customers/{id}/address": 2
       }
+    },
+    {
+      "q": "quarantine escrow ledger must be reconciled before release",
+      "in": "graph",
+      "needle": true,
+      "relevant": {
+        "GET https://app.example:443/docs/handbook": 2
+      }
+    },
+    {
+      "q": "gravel harbour transfer flagged for review",
+      "in": "graph",
+      "needle": true,
+      "relevant": {
+        "GET https://app.example:443/notes/flat": 2
+      }
+    },
+    {
+      "q": "zephyr hydration gizmo launch banner",
+      "in": "graph",
+      "needle": true,
+      "relevant": {
+        "GET https://app.example:443/app/home": 2
+      }
+    },
+    {
+      "q": "contact support form with subject body and order reference",
+      "in": "graph",
+      "needle": true,
+      "relevant": {
+        "GET https://app.example:443/support": 2
+      }
+    },
+    {
+      "q": "cobalt widget lantern allocation under seasonal terms",
+      "in": "graph",
+      "needle": true,
+      "relevant": {
+        "GET https://app.example:443/promo/a": 2,
+        "GET https://app.example:443/promo/b": 2,
+        "GET https://app.example:443/promo/c": 2
+      }
+    },
+    {
+      "q": "client bundle that calls a late export endpoint",
+      "in": "graph",
+      "include_static": true,
+      "needle": true,
+      "relevant": {
+        "GET https://app.example:443/api/late/export": 2,
+        "GET https://app.example:443/static/big.min.js": 1
+      }
     }
   ],
+  "graph": {
+    "aws_key": "AKIAQ7XJ2MZP4TNW5RBD",
+    "widget_needle": "cobalt-widget-lantern",
+    "long_pages": [
+      "GET https://app.example:443/docs/handbook",
+      "GET https://app.example:443/notes/flat"
+    ],
+    "listing_pages": [
+      "GET https://app.example:443/catalog"
+    ],
+    "promo_pages": [
+      "GET https://app.example:443/promo/a",
+      "GET https://app.example:443/promo/b",
+      "GET https://app.example:443/promo/c"
+    ],
+    "bundle_users": [
+      "GET https://app.example:443/docs/handbook",
+      "GET https://app.example:443/notes/flat",
+      "GET https://app.example:443/catalog",
+      "GET https://app.example:443/app/home"
+    ],
+    "bundle": "GET https://app.example:443/static/big.min.js",
+    "edges": [
+      {
+        "src": "GET https://app.example:443/support",
+        "rel": "SUBMITS_TO",
+        "dst": "POST https://app.example:443/api/orders",
+        "via": "form"
+      },
+      {
+        "src": "GET https://app.example:443/catalog",
+        "rel": "LINKS_TO",
+        "dst": "GET https://app.example:443/api/products/{id}"
+      },
+      {
+        "src": "GET https://app.example:443/docs/handbook",
+        "rel": "LOADS",
+        "dst": "GET https://app.example:443/static/big.min.js"
+      },
+      {
+        "src": "GET https://app.example:443/static/big.min.js",
+        "rel": "CALLS",
+        "dst": "POST https://app.example:443/api/orders"
+      }
+    ],
+    "stub_routes": [
+      "/api/internal/ping",
+      "/api/late/export",
+      "/api/dev/reports/summary"
+    ],
+    "chrome_phrases": [
+      "Powered by Acme Quantum Gateway",
+      "Acme Quantum Gateway console"
+    ],
+    "hydration_entity": "order"
+  },
   "screened": [
     {
       "q": "sql injection in the orders endpoint",

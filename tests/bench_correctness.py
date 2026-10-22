@@ -107,7 +107,7 @@ def check_artifact(report, manifest):
 def check_routes(report, manifest, rows):
     want = {r['ref']: r for r in manifest['routes']}
     got = {route_ref(r): r for r in rows
-           if r.get('node_kind') in ('page', 'action', 'endpoint')}
+           if r.get('node_kind') in ('page', 'action', 'endpoint') and r.get('observed') is not False}
     if not report.equal('routes/exact route set', set(got), set(want)):
         return
     for field, default in [('node_kind', None), ('access_control', None),
@@ -370,6 +370,88 @@ def check_findings(report):
                  f"error={guard.get('error')!r}")
 
 
+def check_graph(report, manifest):
+    """Knowledge-graph shapes: segmentation, shared nodes, edges, stubs, secrets."""
+    import chromadb
+    truth = manifest['graph']
+    client = chromadb.PersistentClient(path=os.path.join(fixture.project_dir(), 'chroma_db'))
+    nodes = client.get_collection('graph', embedding_function=None).get(include=['metadatas', 'documents'])
+    edges = client.get_collection('edges', embedding_function=None).get(include=['metadatas'])
+    meta = dict(zip(nodes['ids'], nodes['metadatas']))
+    docs = dict(zip(nodes['ids'], nodes['documents']))
+    embed = {i: m.get('_embed_text', '') for i, m in meta.items()}
+    ref_id = {}
+    for node_id, m in meta.items():
+        if m.get('node_type') == 'route':
+            ref_id[f"{m['method']} {m['scheme']}://{m['host']}:{m['port']}{m['endpoint_template']}"] = node_id
+    edge_set = {(e['src'], e['rel'], e['dst']) for e in edges['metadatas']}
+    contains = {}
+    for src, rel, dst in edge_set:
+        if rel == 'CONTAINS':
+            contains.setdefault(dst, set()).add(src)
+
+    # --- sectioning ------------------------------------------------------
+    for ref in truth['long_pages']:
+        sections = [s for s in contains if meta.get(s, {}).get('node_type') == 'section'
+                    and ref_id[ref] in contains[s]]
+        report.check(f'graph/{ref}/long page is sectioned within the cap', 1 < len(sections) <= 8,
+                     f'{len(sections)} sections')
+        report.check(f'graph/{ref}/no section over the cap', all(len(docs[s]) <= 3000 for s in sections))
+    handbook = [docs[s] for s in contains if 'quarantine-escrow-ledger' in docs[s]]
+    report.equal('graph/needle deep in a div-only page lands in exactly one section', len(handbook), 1)
+    report.check('graph/flat-text needle lands in a section',
+                 any('Gravel-harbour-transfer' in d for d in docs.values()))
+
+    # --- listing, hydration, shared widget --------------------------------
+    for ref in truth['listing_pages']:
+        sections = [s for s in contains if ref_id[ref] in contains[s]]
+        report.check(f'graph/{ref}/30 cards collapse, not 30 nodes', len(sections) <= 4, f'{len(sections)}')
+    report.check('graph/hydration-only content is searchable on the route',
+                 any('Zephyr-hydration-gizmo' in d for i, d in embed.items()
+                     if meta[i].get('endpoint_template') == '/app/home'))
+    widget = [s for s in contains if truth['widget_needle'] in docs[s]]
+    report.equal('graph/shared widget stored once', len(widget), 1)
+    report.equal('graph/shared widget contained by every page', len(contains[widget[0]]) if widget else 0,
+                 len(truth['promo_pages']))
+
+    # --- chrome ----------------------------------------------------------
+    for phrase in truth['chrome_phrases']:
+        leaked = [meta[i].get('endpoint_template') for i, d in embed.items()
+                  if phrase in d and meta[i].get('node_type') in ('behavior', 'section')]
+        report.check(f'graph/chrome "{phrase}" removed from page nodes', not leaked, str(leaked[:4]))
+
+    # --- edges -----------------------------------------------------------
+    for want in truth['edges']:
+        src, dst = ref_id.get(want['src']), ref_id.get(want['dst'])
+        if want['rel'] == 'SUBMITS_TO':
+            forms = {d for s, r, d in edge_set if r == 'CONTAINS' and s == src and meta.get(d, {}).get('node_type') == 'form'}
+            ok = any((f, 'SUBMITS_TO', dst) in edge_set for f in forms)
+        else:
+            ok = (src, want['rel'], dst) in edge_set
+        report.check(f"graph/edge {want['src']} -{want['rel']}-> {want['dst']}", ok)
+    entity = {i for i, m in meta.items() if m.get('node_type') == 'data_object'}
+    report.check('graph/hydration payload RETURNS an entity',
+                 any((ref_id[f"GET {manifest['origin']['scheme']}://{manifest['origin']['host']}:{manifest['origin']['port']}/app/home"],
+                      'RETURNS', e) in edge_set for e in entity))
+
+    # --- stubs -----------------------------------------------------------
+    for template in truth['stub_routes']:
+        stubs = [m for m in meta.values() if m.get('node_type') == 'route' and m['endpoint_template'] == template]
+        report.check(f'graph/stub {template} exists and is unobserved',
+                     len(stubs) == 1 and stubs[0].get('observed') is False, str(stubs))
+
+    # --- secrets ---------------------------------------------------------
+    key = truth['aws_key']
+    report.check('graph/credential value absent from every embedded text',
+                 not any(key in d for d in embed.values()) and
+                 not any(key in d for i, d in docs.items() if meta[i].get('node_type') != 'behavior'))
+    report.check('graph/credential value absent from every node metadata',
+                 not any(key in json.dumps(m) for m in meta.values()))
+    found = fixture.query(['identifier', key])
+    report.check('graph/credential value resolves through the identifier index',
+                 bool(found.get('results') or found.get('total')), json.dumps(found)[:200])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--verbose', action='store_true')
@@ -389,6 +471,7 @@ def main():
     check_evidence_roundtrip(report)
     check_hint_contract(report)
     check_error_paths(report)
+    check_graph(report, manifest)
     check_findings(report)
     check_stored_document_invariant(report, manifest)
     sys.exit(0 if report.finish('tier A') else 1)
