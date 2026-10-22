@@ -21,7 +21,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections import Counter
 from functools import lru_cache
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 from bs4 import BeautifulSoup, Comment
 
@@ -306,6 +306,7 @@ def extract_identifier_values(path: str, bodies, url: str = '', content_types=No
     Chroma metadata; it belongs in a side exact-match index only."""
     out = []
     segs = [s for s in (path or '').split('/') if s]
+    segs = [unquote(s) for s in segs]      # stored decoded, so %41 and A are one value
     for i, seg in enumerate(segs):
         if len(out) >= IDENTIFIER_CAP:
             break
@@ -431,13 +432,15 @@ def graphql_operation(req_body: str, url: str = '') -> str:
     query = ''
     try:
         obj = json.loads(req_body or '')
+        if isinstance(obj, list):      # batched operations: describe the first query
+            obj = next((o for o in obj if isinstance(o, dict) and 'query' in o), None)
         if isinstance(obj, dict):
             query = str(obj.get('query', ''))
     except Exception:
         body = re.sub(r'#[^\r\n]*', ' ', req_body or '').lstrip()
         if re.match(r'(\{|(query|mutation|subscription|fragment)\b)', body):
             query = body
-    if not query:
+    if not query and 'graphql' in urlparse(url).path.lower():
         query = parse_qs(urlparse(url).query).get('query', [''])[0]
     query = re.sub(r'#[^\r\n]*', ' ', query)
     match = re.search(r'\b(query|mutation|subscription)\s*([A-Za-z_][A-Za-z0-9_]*)?', query)
@@ -1041,7 +1044,10 @@ def structured_schema(body: str, content_type=''):
     return json_schema(body)
 
 
-def structured_semantic_values(body: str, keys=None):
+SENSITIVE_VALUE_KEYS = frozenset({'code', 'state'})   # OAuth/OTP-style one-time values
+
+
+def structured_semantic_values(body: str, keys=None, redact=False):
     """Bounded message/enum values that distinguish behavior without IDs.
 
     `keys` restricts which fields contribute; the variant signatures pass
@@ -1062,7 +1068,10 @@ def structured_semantic_values(body: str, keys=None):
                 name = str(key).lower()
                 if name in (keys if keys is not None else MESSAGE_KEYS | SEMANTIC_VALUE_KEYS) \
                         and isinstance(item, (str, int, float, bool)):
-                    values.append(f'{key}={_truncate(str(item), 120)}')
+                    if redact and name in SENSITIVE_VALUE_KEYS:
+                        values.append(f'{key}=<value:{len(str(item))}>')   # shape only, never the value
+                    else:
+                        values.append(f'{key}={_truncate(str(item), 120)}')
                 elif isinstance(item, (dict, list)):
                     collect(item, depth + 1)
         elif isinstance(value, list):

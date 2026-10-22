@@ -12,8 +12,8 @@ LOAD_BATCH = 32
 
 # Bump whenever extract_features / identifier_pairs output can change
 # (distill.py, normalize.py, parse.py).
-FEATURE_VERSION = 'features-v4'
-IDENTIFIER_VERSION = 'identifiers-v5'
+FEATURE_VERSION = 'features-v5'
+IDENTIFIER_VERSION = 'identifiers-v6'
 PARSER_VERSION = 'parser-v2'
 
 

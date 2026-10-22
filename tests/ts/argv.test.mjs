@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
 const outDir = process.env.JEB_TS_OUT
-const { buildArgv } = await import(pathToFileURL(join(outDir, "tools.js")).href)
+const { buildArgv, resolveDbPath } = await import(pathToFileURL(join(outDir, "tools.js")).href)
 
 test("dash-prefixed positional goes behind --", () => {
   const argv = buildArgv({ command: "get", target: "--delete-everything" }, { positionals: ["target"], allowed: ["target", "collection"] })
@@ -41,4 +41,10 @@ test("empty values are skipped and overrides rename flags", () => {
     { positionals: ["target"], flagOverrides: { collection: "--in" } },
   )
   assert.deepEqual(argv, ["--in", "graph", "--", "q"])
+})
+
+test("project_dir becomes db_path under chroma_db", () => {
+  assert.deepEqual(resolveDbPath({ command: "map", project_dir: "/work/eng" }), { command: "map", db_path: "/work/eng/chroma_db" })
+  assert.deepEqual(resolveDbPath({ command: "map" }), { command: "map" })
+  assert.throws(() => resolveDbPath({ command: "map", project_dir: "/a", db_path: "/b" }), /either project_dir or db_path/)
 })

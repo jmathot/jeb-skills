@@ -87,7 +87,7 @@ def pass_a(items, auth_cookie_names=None):
         resp_ct = d.resp_media_type(resp_headers)
         param_names = d.extract_param_names(method, url, req_ct, req_body)
         graphql_operation = d.graphql_operation(req_body, url)
-        req_semantic = (d.structured_semantic_values(req_body, d.VARIANT_KEY_VALUES)[:8]
+        req_semantic = (d.structured_semantic_values(req_body, d.VARIANT_KEY_VALUES, redact=True)[:8]
                         if req_body and ('json' in req_ct or d._looks_json(req_body)) else [])
         cookies = (auth_cookie_names.get((scheme, host, port), set())
                    if isinstance(auth_cookie_names, dict) else auth_cookie_names)

@@ -22,6 +22,7 @@ import normalize  # noqa: E402
 import ontology  # noqa: E402
 import parse  # noqa: E402
 import segment  # noqa: E402
+import storage  # noqa: E402
 
 FAILURES = []
 
@@ -161,8 +162,40 @@ def test_build_graph():
     check('graph texts within cap', all(len(c['embed_text']) <= segment.PAGE_EMBED_CAP + 1000 for c in chunks))
 
 
+# --- request signatures, graphql, identifiers, redaction -------------------
+def test_signatures_and_identifiers():
+    print('signatures and identifiers')
+    sig = d.request_variant_signature
+    check('variant signature ignores key order',
+          sig('{"a":1,"b":2}', 'application/json') == sig('{"b":2,"a":1}', 'application/json'))
+    check('variant signature sees a different state value',
+          sig('{"status":"a"}', 'application/json') != sig('{"status":"b"}', 'application/json'))
+    check('form body is not graphql', d.graphql_operation('type=query&x=1') == '')
+    batch = '[{"x":1},{"query":"query Orders { orders { id } }"}]'
+    check('batched graphql is described', d.graphql_operation(batch).startswith('query:Orders:'),
+          d.graphql_operation(batch))
+    check('?query= only counts on graphql paths',
+          d.graphql_operation('', 'https://a.example/search?query=mutation%20X%20%7B%20y%20%7D') == ''
+          and d.graphql_operation('', 'https://a.example/graphql?query=mutation%20X%20%7B%20y%20%7D').startswith('mutation:X'))
+
+    body = '{"code":"4f9a7c21d0","status":"ok","state":"abc123"}'
+    shown = d.structured_semantic_values(body, d.VARIANT_KEY_VALUES, redact=True)
+    check('one-time values are shape-tagged in embed form',
+          'code=<value:10>' in shown and 'state=<value:6>' in shown and 'status=ok' in shown
+          and not any('4f9a7c21d0' in v or 'abc123' in v for v in shown), str(shown))
+    check('signature still sees the raw value',
+          sig(body, 'application/json') != sig(body.replace('4f9a7c21d0', '0000000000'), 'application/json'))
+
+    upper = '9F1B2C3D-4E5F-6789-ABCD-EF0123456789'
+    check('uuid normalises to lower case', storage.normalize_identifier(upper) == upper.lower())
+    check('opaque tokens stay verbatim', storage.normalize_identifier('Ab-Cd_Ef') == 'Ab-Cd_Ef')
+    found = d.extract_identifier_values(f'/api/items/{upper}/%34%32%31%30%39', [])
+    values = [v for _, v in found]
+    check('percent-encoded path segments are decoded', '42109' in values and upper in values, str(found))
+
+
 def main():
-    for test in (test_segment, test_jsfacts, test_fit, test_build_graph):
+    for test in (test_segment, test_jsfacts, test_fit, test_signatures_and_identifiers, test_build_graph):
         test()
     print('unit checks:', 'FAILED ' + ', '.join(FAILURES) if FAILURES else 'all passed')
     return 1 if FAILURES else 0

@@ -3,6 +3,7 @@
 Lookup collections use fixed one-dimensional vectors and never call Ollama.
 Their records are accessed exclusively through get()/metadata equality.
 """
+import re
 import hashlib
 import json
 from contextlib import contextmanager
@@ -80,6 +81,17 @@ def delete_ids(collection, ids):
         collection.delete(ids=ids[start:start + PAGE_SIZE])
 
 
+_CASE_INSENSITIVE_ID = re.compile(
+    r'^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{16,})$')
+
+
+def normalize_identifier(value):
+    """The form an identifier value is stored and looked up in: UUIDs and hex
+    digests are case-insensitive, so they are lower-cased; everything else is verbatim."""
+    text = str(value)
+    return text.lower() if _CASE_INSENSITIVE_ID.match(text) else text
+
+
 def sync_identifiers(client, source_collection, records, replace=False):
     """Stream occurrences and reconcile only the supplied source documents.
 
@@ -93,7 +105,8 @@ def sync_identifiers(client, source_collection, records, replace=False):
     for record in records:
         desired = []
         for field, value in sorted(set(map(tuple, record.get('identifier_pairs', [])))):
-            meta = {'value': str(value), 'field': field, 'doc_id': record['id'],
+            value = normalize_identifier(value)
+            meta = {'value': value, 'field': field, 'doc_id': record['id'],
                     'source_collection': source_collection}
             if record.get('capture_id'):
                 meta['capture_id'] = record['capture_id']

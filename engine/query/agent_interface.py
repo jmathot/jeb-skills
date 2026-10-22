@@ -15,7 +15,7 @@ from embedding import EMBEDDING_PROFILE_METADATA, embed_documents, make_ollama_e
 import distill as d
 import ontology
 from storage import (LOOKUP_COLLECTIONS, batches, scan, sync_identifiers,
-                     writer_lock, digest)
+                     writer_lock, digest, normalize_identifier)
 from findings import finding_document, parse_finding, pairs_for_finding
 from streaming import IDENTIFIER_VERSION
 import retrieval
@@ -64,6 +64,11 @@ def _depth_from_env(name, base):
 DEPTH = {name: _depth_from_env(name, base) for name, base in _DEPTH_BASE.items()}
 
 
+def is_project(db_path):
+    """True when `db_path` already holds a Chroma store; opening a client elsewhere would create one."""
+    return os.path.isfile(os.path.join(db_path, 'chroma.sqlite3'))
+
+
 class MissingCollection(ValueError):
     pass
 
@@ -72,13 +77,16 @@ class JebAgent:
     def __init__(self, db_path='./chroma_db', collection_name='graph', create_if_missing=False):
         self.db_path = os.path.abspath(db_path)
         self.collection_name = collection_name
-        if not create_if_missing and not os.path.isdir(self.db_path):
+        if not is_project(self.db_path):
             raise MissingCollection('Project database does not exist; import a capture first.')
         self.client = chromadb.PersistentClient(path=self.db_path)
         self.ollama_ef = make_ollama_ef()
         self._siblings = {}
         self._parent_index_cache = None
         have = {c.name for c in self.client.list_collections()}
+        if create_if_missing and 'captures' not in have:
+            # Findings are written into an imported project, never into a fresh directory.
+            raise MissingCollection('Project database has no imported capture; import one before recording findings.')
         if collection_name not in have:
             if not create_if_missing:
                 raise MissingCollection(f"Project has no '{collection_name}' collection.")
@@ -236,7 +244,7 @@ class JebAgent:
         return [{'id': r['metadatas']['doc_id'],
                  'collection': r['metadatas']['source_collection'],
                  'field': r['metadatas']['field']}
-                for r in scan(col, where={'value': str(value)})
+                for r in scan(col, where={'value': normalize_identifier(value)})
                 if r['metadatas'].get('source_collection') != 'exchanges'
                 or r['metadatas'].get('capture_id') in allowed]
 
@@ -416,7 +424,7 @@ def envelope(command, **fields):
 
 
 def resolve_collection(db_path, doc_id):
-    if not os.path.isdir(db_path):
+    if not is_project(db_path):
         raise MissingCollection('Project database does not exist; import a capture first.')
     client = chromadb.PersistentClient(path=os.path.abspath(db_path))
     have = {c.name for c in client.list_collections()}
@@ -625,12 +633,12 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     try:
-        if args.command == 'record-attack':
+        if args.command == 'record-attack' and is_project(args.db_path):
             with writer_lock(args.db_path):
                 result = execute(args)
         else:
             result = execute(args)
-        if os.path.isdir(args.db_path):
+        if is_project(args.db_path):
             client = chromadb.PersistentClient(path=os.path.abspath(args.db_path))
             names = {c.name for c in client.list_collections()}
             if 'attacks_rebuild_backup' in names:

@@ -55,7 +55,9 @@ run_units() {
 }
 
 # One import shared by every tier; only tier C builds its own for cold timings.
-"$python" "$here/fixture.py" ${fresh:+--fresh}
+needs_db=""
+for tier in "${tiers[@]}"; do case "$tier" in u|U) ;; *) needs_db=1 ;; esac; done
+[ -n "$needs_db" ] && "$python" "$here/fixture.py" ${fresh:+--fresh}
 
 status=0
 # Units first, so a pure-function failure is not buried under database output.

@@ -1,3 +1,4 @@
+import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import { runEngine } from "./engine.js"
 import { importScript, queryScript, visualizeScript } from "./paths.js"
@@ -19,6 +20,15 @@ const strArr = (description: string): SchemaProp => ({ type: "array", items: { t
 const enumStr = (values: string[], description: string): SchemaProp => ({ type: "string", enum: values, description })
 
 const dbPath = str("Project database path; defaults to ./chroma_db in the current project directory.")
+const projectDir = str("Engagement project directory (the one given to jeb_import); the database is <project_dir>/chroma_db. Alternative to db_path.")
+
+// `project_dir` is sugar for `--db-path <project_dir>/chroma_db`; the engine only sees db_path.
+export function resolveDbPath(input: Record<string, any>): Record<string, any> {
+  const { project_dir, ...rest } = input
+  if (project_dir === undefined || project_dir === null || project_dir === "") return rest
+  if (rest.db_path) throw new Error("give either project_dir or db_path, not both")
+  return { ...rest, db_path: join(String(project_dir), "chroma_db") }
+}
 
 // Positional arguments per subcommand (order matters; everything else is a flag).
 const QUERY_POSITIONALS: Record<string, string[]> = {
@@ -222,12 +232,14 @@ export async function registerTools(
           response_file: str("Path to a response file (record-attack; alternative to response)."),
           event_id: str("Idempotency key (record-attack); reuse only for identical inputs."),
           db_path: dbPath,
+          project_dir: projectDir,
         },
       },
-      execute: async (input: any, context) => {
-        const command = String(input.command)
+      execute: async (raw: any, context) => {
+        const command = String(raw.command)
         if (!(command in QUERY_FLAGS)) return { content: JSON.stringify({ error: `unknown query command: ${command}` }) }
         try {
+          const input = resolveDbPath(raw)
           const argv = [command, ...buildArgv(input, {
             positionals: QUERY_POSITIONALS[command],
             allowed: QUERY_FLAGS[command],

@@ -318,6 +318,19 @@ def check_error_paths(report):
         report.check(f'errors/{" ".join(argv[:4])}',
                      fragment in payload.get('error', ''),
                      f"error={payload.get('error')!r}")
+    # A finding is never written into a directory that holds no imported capture.
+    import tempfile
+    empty = tempfile.mkdtemp(prefix='jeb-empty-')
+    try:
+        for project in (os.path.join(empty, 'absent'), empty):
+            got = fixture.query(['record-attack', '--vuln-class', 'x', '--endpoint', 'https://a.example:443/x'],
+                                project=project, check=False)
+            report.check('errors/record-attack outside an imported project',
+                         'import' in got.get('error', ''), f"error={got.get('error')!r}")
+        report.check('errors/record-attack created nothing', os.listdir(empty) == [], str(os.listdir(empty)))
+    finally:
+        import shutil
+        shutil.rmtree(empty, ignore_errors=True)
 
 
 def check_stored_document_invariant(report, manifest):
