@@ -24,17 +24,28 @@ const DEPTH_FIELDS: Record<string, string> = {
   rawChars: "RAW_CHARS",
 }
 
+// What the engine uses when an index-defining option is unset. The signature is
+// built from effective values so an option that merely restates a default is not
+// reported as a change.
+export const INDEX_DEFAULTS: Record<string, string> = {
+  embeddingModel: "embeddinggemma-2:latest",
+  embeddingScheme: "embeddinggemma2-v1-titled-768d",
+  distanceMetric: "cosine",
+  ollamaUrl: "http://localhost:11434/api/embeddings",
+  embeddingDimensions: "768",
+}
+
 export function buildConfig(options: Options): BuiltConfig {
   const env: Record<string, string> = {}
   const warnings: string[] = []
   const o = options ?? {}
 
   // --- Index-defining (rebuild-affecting) ---
-  const indexParts: string[] = []
+  const effective: Record<string, string> = { ...INDEX_DEFAULTS }
   const setIndex = (key: string, envName: string, value: unknown, cast = String) => {
     if (value === undefined || value === null || value === "") return
     env[envName] = cast(value)
-    indexParts.push(`${key}=${env[envName]}`)
+    effective[key] = env[envName]
   }
   setIndex("embeddingModel", "JEB_EMBEDDING_MODEL", o.embeddingModel)
   setIndex("embeddingScheme", "JEB_EMBEDDING_SCHEME", o.embeddingScheme)
@@ -93,5 +104,9 @@ export function buildConfig(options: Options): BuiltConfig {
     }
   }
 
-  return { env, indexSignature: indexParts.sort().join("|"), warnings }
+  const indexSignature = Object.keys(effective)
+    .sort()
+    .map((key) => `${key}=${effective[key]}`)
+    .join("|")
+  return { env, indexSignature, warnings }
 }

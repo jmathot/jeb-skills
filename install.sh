@@ -53,7 +53,12 @@ install_entry() {
     fi
 
     if [ "$MODE" = "copy" ]; then
-        cp -R "$src" "$dest"
+        if [ -d "$src" ]; then
+            mkdir -p "$dest"
+            tar -C "$src" --exclude=.git --exclude=engine/.venv --exclude=tests/.work --exclude=node_modules -cf - . | tar -C "$dest" -xf -
+        else
+            cp -R "$src" "$dest"
+        fi
         echo "✓ copied $label → $dest"
     else
         ln -s "$src" "$dest"
@@ -77,7 +82,8 @@ fi
 
 MODEL="embeddinggemma-2:latest"
 if command -v ollama >/dev/null 2>&1; then
-    if ollama list 2>/dev/null | grep -q "${MODEL%%:*}"; then
+    installed="$(ollama list 2>/dev/null || true)"
+    if grep -qF "$MODEL" <<<"$installed"; then
         echo "✓ Ollama model $MODEL present"
     else
         echo "… pulling Ollama model $MODEL"

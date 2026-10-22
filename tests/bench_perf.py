@@ -95,7 +95,7 @@ def instrument(counters):
     import import_project
     import build_graph
     import build_structure
-    import storage
+    import findings
 
     collection = collection_module.Collection
     for name in ('get', 'query', 'upsert', 'update', 'delete', 'count'):
@@ -116,7 +116,8 @@ def instrument(counters):
                         (build_structure, 'build_endpoint_nodes'),
                         (build_structure, 'build_entities'),
                         (import_project, 'sync_edges'),
-                        (storage, 'sync_identifiers')]:
+                        (import_project, 'sync_identifiers'),
+                        (findings, 'sync_identifiers')]:
         counters.time(owner, name, f'{name}')
     counters.count(import_project, 'extract_features', 'features.extract')
     return import_project

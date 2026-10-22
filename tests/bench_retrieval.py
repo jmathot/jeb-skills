@@ -151,19 +151,22 @@ def run_semantic(manifest, sigs, verbose):
 
 # --- keyword -------------------------------------------------------------
 def oracle_hits(needle):
-    """Count capture items containing `needle`, decoding the XML independently.
+    """Identities (time, method, url) of capture items containing `needle`,
+    decoding the XML independently.
 
     Deliberately does not import distill/normalize: if this agreed with the
     engine by sharing its decoder it would prove nothing.
     """
+    import html as htmllib
     with open(os.path.join(TESTS, 'capture.xml')) as handle:
         xml = handle.read()
-    hits = 0
+    hits = set()
     for item in re.findall(r'<item>.*?</item>', xml, re.S):
         text = '\n'.join(base64.b64decode(m.group(1)).decode('utf-8', 'replace')
                          for m in re.finditer(r'base64="true">([^<]*)</', item))
         if needle in text:
-            hits += 1
+            field = lambda tag: htmllib.unescape(re.search(rf'<{tag}>(.*?)</{tag}>', item, re.S).group(1))
+            hits.add((field('time'), field('method'), field('url')))
     return hits
 
 
@@ -171,18 +174,19 @@ def run_keyword(manifest, verbose):
     rows, exact = [], True
     for needle in manifest['needles']:
         want = oracle_hits(needle['text'])
-        got = fixture.query(['search', '--in', 'exchanges', '--contains',
-                             needle['text'], '--limit', '500'])['total']
-        true_positive = min(want, got)
+        found = fixture.query(['search', '--in', 'exchanges', '--contains',
+                               needle['text'], '--limit', '500'])
+        got = {(r['time'], r['method'], r['url']) for r in found['results']}
+        true_positive = len(want & got)
         row = {
-            'name': needle['name'], 'oracle': want, 'engine': got,
-            'precision': round(true_positive / got, 4) if got else 0.0,
-            'recall': round(true_positive / want, 4) if want else 0.0,
+            'name': needle['name'], 'oracle': len(want), 'engine': len(got),
+            'precision': round(true_positive / len(got), 4) if got else 0.0,
+            'recall': round(true_positive / len(want), 4) if want else 0.0,
         }
         rows.append(row)
         exact = exact and got == want
         if verbose:
-            print(f"  needle {row['name']:<16} oracle={want:<4} engine={got:<4} "
+            print(f"  needle {row['name']:<16} oracle={len(want):<4} engine={len(got):<4} "
                   f"P={row['precision']} R={row['recall']}")
     return {'needles': rows, 'exact_agreement': exact,
             'precision': round(mean([r['precision'] for r in rows]), 4),

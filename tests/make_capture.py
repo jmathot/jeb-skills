@@ -692,6 +692,7 @@ def build(out_dir):
         'routes': [routes[r] for r in sorted(routes)],
         'entities': entities,
         'non_entities': non_entities,
+        'non_entity_fields': {name: sorted(SHAPES[name]) for name in non_entities},
         'entity_threshold': 0.6,
         # Identifier rows are written for `exchanges` (at ingest) and `attacks`
         # (findings) only, so lookups resolve to observations, never to derived

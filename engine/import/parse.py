@@ -53,10 +53,11 @@ def should_keep_header(name: str) -> bool:
 
 def parse_http(raw: bytes, is_request: bool):
     try:
-        if b'\r\n\r\n' in raw:
+        crlf, lf = raw.find(b'\r\n\r\n'), raw.find(b'\n\n')
+        if crlf >= 0 and (lf < 0 or crlf <= lf):
             head, _, body = raw.partition(b'\r\n\r\n')
             nl = '\r\n'
-        elif b'\n\n' in raw:
+        elif lf >= 0:
             head, _, body = raw.partition(b'\n\n')
             nl = '\n'
         else:

@@ -33,6 +33,9 @@ from chromadb.utils import embedding_functions
 EMBEDDING_SCHEME = os.environ.get("JEB_EMBEDDING_SCHEME") or "embeddinggemma2-v1-titled-768d"
 COLLECTION_SCHEMA = "jeb-v7-graph"
 DISTANCE_METRIC = os.environ.get("JEB_DISTANCE_METRIC") or "cosine"
+if DISTANCE_METRIC != "cosine":
+    # The query cutoffs and the compressed-distance calibration assume cosine.
+    raise RuntimeError(f"JEB_DISTANCE_METRIC={DISTANCE_METRIC!r} is unsupported: distance cutoffs assume cosine.")
 
 OLLAMA_URL = os.environ.get("JEB_OLLAMA_URL") or "http://localhost:11434/api/embeddings"
 OLLAMA_MODEL = os.environ.get("JEB_EMBEDDING_MODEL") or "embeddinggemma-2:latest"

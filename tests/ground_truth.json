@@ -1235,6 +1235,22 @@
     "rates",
     "session_info"
   ],
+  "non_entity_fields": {
+    "quoted_note": [
+      "author",
+      "id",
+      "note"
+    ],
+    "rates": [
+      "currency",
+      "rate"
+    ],
+    "session_info": [
+      "authenticated",
+      "expires_at",
+      "user_id"
+    ]
+  },
   "entity_threshold": 0.6,
   "identifiers": [
     {

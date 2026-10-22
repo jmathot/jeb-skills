@@ -212,7 +212,7 @@ class JebAgent:
         return {'id': doc_id, **row}
 
     def find_similar(self, doc_id, n_results=8, where=None, snippet_len=200, post=None):
-        seed = self.collection.get(ids=[doc_id], include=['embeddings'])
+        seed = self.collection.get(ids=[doc_id], include=['embeddings', 'metadatas'])
         if not seed['ids']:
             return {'results': []}
         kwargs = {'where': where} if where else {}
@@ -220,8 +220,9 @@ class JebAgent:
                                       n_results=max(n_results * 4, 40),
                                       include=['metadatas', 'distances'], **kwargs)
         results = []
+        parent = (seed['metadatas'][0] or {}).get('anchor_id')
         for i, m, distance in zip(found['ids'][0], found['metadatas'][0], found['distances'][0]):
-            if i != doc_id and all(p(m) for p in (post or [])):
+            if i not in (doc_id, parent) and all(p(m) for p in (post or [])):
                 results.append(self._summarize(i, m, distance, snippet_len))
         return {'results': results[:n_results]}
 
@@ -379,7 +380,9 @@ def build_where(args, collection):
     if collection == 'graph' and not getattr(args, 'include_static', False):
         clauses.append({'is_static': False})
     if getattr(args, 'where', None):
-        clauses.append(json.loads(args.where))
+        extra = json.loads(args.where)
+        if extra:
+            clauses.append(extra)
     return {'$and': clauses} if len(clauses) > 1 else clauses[0] if clauses else None
 
 
@@ -414,7 +417,7 @@ def envelope(command, **fields):
 
 def resolve_collection(db_path, doc_id):
     if not os.path.isdir(db_path):
-        return None
+        raise MissingCollection('Project database does not exist; import a capture first.')
     client = chromadb.PersistentClient(path=os.path.abspath(db_path))
     have = {c.name for c in client.list_collections()}
     for name in ADDRESSABLE:

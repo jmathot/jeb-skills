@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 
 import fixture
@@ -169,8 +170,9 @@ def check_entities(report, manifest, rows):
         report.check(f'entities/{name}/related sorted by score',
                      order == sorted(order, reverse=True), f'scores={order}')
     # Shapes seen at a single route must not be promoted.
-    report.equal('entities/single-route shapes not promoted',
-                 len(engine), len(manifest['entities']))
+    promoted = {tuple(sorted(f)) for f in by_fields}
+    for name, fields in manifest['non_entity_fields'].items():
+        report.check(f'entities/{name}/single-route shape not promoted', tuple(fields) not in promoted)
 
 
 def check_auth_model(report, manifest, rows):
@@ -250,12 +252,14 @@ def check_hint_contract(report):
         payload = fixture.query(argv, check=False)
         for hint in payload.get('next', []):
             seen += 1
-            parts = hint.split()
+            parts = shlex.split(hint)
             if not report.check(f'hints/{hint[:48]}/prefix',
                                 hint.startswith('jeb query ') or hint.startswith('jeb import '),
                                 hint):
                 continue
             name = parts[1]
+            loose = [p for p in parts[2:] if '=' not in p]
+            report.check(f'hints/{hint[:48]}/every token is key=value', not loose, f'loose={loose}')
             kv = dict(p.split('=', 1) for p in parts[2:] if '=' in p)
             report.check(f'hints/{hint[:48]}/command known',
                          kv.get('command') in schema[name]['commands'],
@@ -341,36 +345,51 @@ def check_stored_document_invariant(report, manifest):
 
 
 def check_findings(report):
-    """record-attack is idempotent on event_id and rejects reuse for new inputs."""
+    """record-attack is idempotent on event_id and rejects reuse for new inputs.
+
+    Runs against a scratch copy of the fixture database so the shared fixture
+    (and the digests taken from it) never contains a finding."""
+    import shutil
+    import tempfile
+    scratch = tempfile.mkdtemp(prefix='jeb-findings-')
+    try:
+        shutil.copytree(fixture.project_dir(), scratch, dirs_exist_ok=True)
+        _check_findings(report, scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _check_findings(report, project):
+    query = lambda argv, **kw: fixture.query(argv, project=project, **kw)
     endpoint = 'https://app.example:443/api/orders/1040'
     argv = ['record-attack', '--vuln-class', 'benchmark-probe', '--endpoint', endpoint,
             '--method', 'GET', '--param', 'id', '--payload', "1040' OR '1'='1",
             '--status', '500', '--verdict', 'inconclusive',
             '--evidence', 'tier-A fixture finding', '--event-id', 'jeb-bench-fixture-1']
-    first = fixture.query(argv)
+    first = query(argv)
     report.check('findings/recorded', bool(first.get('recorded')), json.dumps(first)[:200])
     report.equal('findings/identifier index synced',
                  first.get('identifier_state'), 'complete')
-    again = fixture.query(argv)
+    again = query(argv)
     report.equal('findings/idempotent on event_id',
                  again.get('recorded'), first.get('recorded'))
-    clash = fixture.query(argv[:-1] + ['jeb-bench-fixture-1', '--evidence', 'different'],
+    clash = query(argv[:-1] + ['jeb-bench-fixture-1', '--evidence', 'different'],
                           check=False)
     report.check('findings/event_id reuse with new inputs rejected',
                  'different finding inputs' in clash.get('error', ''),
                  f"error={clash.get('error')!r}")
-    listed = fixture.query(['attacks', '--limit', '10'])
+    listed = query(['attacks', '--limit', '10'])
     report.check('findings/listed in attacks',
                  any(r['id'] == first['recorded'] for r in listed['results']),
                  json.dumps(listed)[:200])
     route = next(r for r in all_structure_parents() if r.get('method') == 'GET'
                  and r['endpoint_template'] == '/api/orders/{id}')
-    around = fixture.query(['graph', route['id'], '--rel', 'TARGETS', '--direction', 'in'])
+    around = query(['graph', route['id'], '--rel', 'TARGETS', '--direction', 'in'])
     report.check('findings/graph shows the finding that targets a route',
                  any(r['id'] == first['recorded'] and r.get('node_type') == 'finding' for r in around['results']),
                  json.dumps(around)[:200])
     # With the collection now present, the per-collection filter guard applies.
-    guard = fixture.query(['search', '--in', 'attacks', '--kind', 'entity'], check=False)
+    guard = query(['search', '--in', 'attacks', '--kind', 'entity'], check=False)
     report.check('findings/attacks rejects structural filters',
                  'not supported' in guard.get('error', ''),
                  f"error={guard.get('error')!r}")
