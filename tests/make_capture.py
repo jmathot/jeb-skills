@@ -386,7 +386,9 @@ def div_page(title, main, scripts=()):
 def bundle_minified():
     """>2 MB minified bundle; a credential and an endpoint sit past 2 MB."""
     head = ('/*! react v18.2.0 */\n(function(){var a=function(){return fetch("/api/orders",{method:"POST"})};'
-            'var b=function(){return fetch("/api/internal/ping")};})();\n')
+            'var b=function(){return fetch("/api/internal/ping")};'
+            'var t=function(){return fetch("https://api.thirdparty.test/v2/rates")};'
+            'var c="https://cdn.analytics-example.net/v1/collect";})();\n')
     pad = ''.join(f'var v{i}="{"abcdefghij" * 6}{i}";' for i in range(34000))
     tail = (f'\nvar late=function(){{return fetch("/api/late/export")}};var awsKey="{AWS_KEY}";'
             '//# sourceMappingURL=big.min.js.map\n')
@@ -473,6 +475,9 @@ def add_graph_pages(cap, note_route):
             {'src': f'GET {o}/docs/handbook', 'rel': 'LOADS', 'dst': f'GET {o}/static/big.min.js'},
             {'src': f'GET {o}/static/big.min.js', 'rel': 'CALLS', 'dst': f'POST {o}/api/orders'},
         ],
+        'external_origins': ['https://api.thirdparty.test:443', 'https://cdn.analytics-example.net:443'],
+        'modules': {'bundle': f'GET {o}/static/dev.bundle.js', 'map': f'GET {o}/static/dev.bundle.js.map',
+                    'names': ['./src/api/reports.js']},
         'stub_routes': ['/api/internal/ping', '/api/late/export', '/api/dev/reports/summary'],
         'chrome_phrases': ['Powered by Acme Quantum Gateway', 'Acme Quantum Gateway console'],
         'hydration_entity': 'order',

@@ -8,39 +8,39 @@
     "ollama.embed_documents": 8
   },
   "capture": {
-    "bytes": 4356218,
+    "bytes": 4356386,
     "items": 307
   },
   "entity_scaling": {
     "1000": {
       "entities": 1000,
-      "ms": 252.0
+      "ms": 289.1
     },
     "200": {
       "entities": 200,
-      "ms": 9.9
+      "ms": 10.4
     },
     "2000": {
       "entities": 2000,
-      "ms": 1074.6
+      "ms": 1129.8
     },
     "500": {
       "entities": 500,
-      "ms": 62.0
+      "ms": 64.8
     }
   },
   "import": {
-    "forced_rebuild": 1.479,
-    "ingest": 2.501,
-    "rebuild_from_ingest": 21.816,
-    "total": 25.796
+    "forced_rebuild": 1.565,
+    "ingest": 2.689,
+    "rebuild_from_ingest": 23.922,
+    "total": 28.176
   },
   "note": "Timings and RSS are machine-specific and are reported as deltas only, never gated. Call counts and the collection digests are machine-independent.",
-  "peak_rss_mb": 214.3,
+  "peak_rss_mb": 227.4,
   "phases": {
     "annotate_features": {
       "calls": 2,
-      "seconds": 1.14
+      "seconds": 1.198
     },
     "build_endpoint_nodes": {
       "calls": 2,
@@ -52,68 +52,68 @@
     },
     "build_graph": {
       "calls": 2,
-      "seconds": 0.022
+      "seconds": 0.023
     },
     "extract_features": {
       "calls": 307,
-      "seconds": 0.347
+      "seconds": 0.362
     },
     "hydrate_chunks": {
       "calls": 2,
-      "seconds": 14.59
+      "seconds": 15.816
     },
     "store": {
       "calls": 2,
-      "seconds": 20.399
+      "seconds": 22.434
     },
     "sync_edges": {
       "calls": 2,
-      "seconds": 1.162
+      "seconds": 1.237
     }
   },
   "query_latency": {
     "attacks": {
       "n": 3,
-      "p50_ms": 542.9,
-      "p50_net_ms": 182.9,
-      "p95_ms": 549.2
+      "p50_ms": 563.4,
+      "p50_net_ms": 155.0,
+      "p95_ms": 574.5
     },
     "contains": {
       "n": 3,
-      "p50_ms": 689.0,
-      "p50_net_ms": 329.0,
-      "p95_ms": 706.5
+      "p50_ms": 715.9,
+      "p50_net_ms": 307.5,
+      "p95_ms": 716.4
     },
     "endpoint": {
       "n": 3,
-      "p50_ms": 639.1,
-      "p50_net_ms": 279.1,
-      "p95_ms": 642.6
+      "p50_ms": 620.6,
+      "p50_net_ms": 212.2,
+      "p95_ms": 634.3
     },
     "get": {
       "n": 3,
-      "p50_ms": 564.2,
-      "p50_net_ms": 204.2,
-      "p95_ms": 572.8
+      "p50_ms": 580.9,
+      "p50_net_ms": 172.5,
+      "p95_ms": 582.7
     },
     "identifier": {
       "n": 3,
-      "p50_ms": 582.0,
-      "p50_net_ms": 222.0,
-      "p95_ms": 592.7
+      "p50_ms": 590.8,
+      "p50_net_ms": 182.4,
+      "p95_ms": 593.3
     },
     "map": {
       "n": 3,
-      "p50_ms": 573.0,
-      "p50_net_ms": 213.0,
-      "p95_ms": 584.0
+      "p50_ms": 604.9,
+      "p50_net_ms": 196.5,
+      "p95_ms": 618.7
     },
-    "process_floor_ms": 360.0,
+    "process_floor_ms": 408.4,
     "search": {
       "n": 26,
-      "p50_ms": 651.6,
-      "p50_net_ms": 291.6,
-      "p95_ms": 751.0
+      "p50_ms": 662.7,
+      "p50_net_ms": 254.3,
+      "p95_ms": 763.7
     }
   }
 }

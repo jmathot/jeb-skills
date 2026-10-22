@@ -363,6 +363,12 @@ def check_findings(report):
     report.check('findings/listed in attacks',
                  any(r['id'] == first['recorded'] for r in listed['results']),
                  json.dumps(listed)[:200])
+    route = next(r for r in all_structure_parents() if r.get('method') == 'GET'
+                 and r['endpoint_template'] == '/api/orders/{id}')
+    around = fixture.query(['graph', route['id'], '--rel', 'TARGETS', '--direction', 'in'])
+    report.check('findings/graph shows the finding that targets a route',
+                 any(r['id'] == first['recorded'] and r.get('node_type') == 'finding' for r in around['results']),
+                 json.dumps(around)[:200])
     # With the collection now present, the per-collection filter guard applies.
     guard = fixture.query(['search', '--in', 'attacks', '--kind', 'entity'], check=False)
     report.check('findings/attacks rejects structural filters',
@@ -439,6 +445,22 @@ def check_graph(report, manifest):
         stubs = [m for m in meta.values() if m.get('node_type') == 'route' and m['endpoint_template'] == template]
         report.check(f'graph/stub {template} exists and is unobserved',
                      len(stubs) == 1 and stubs[0].get('observed') is False, str(stubs))
+
+    # --- external origins, module sections, source map ----------------------
+    bundle = ref_id[truth['bundle']]
+    for name in truth['external_origins']:
+        hits = [i for i, m in meta.items() if m.get('node_type') == 'origin' and
+                f"{m['scheme']}://{m['host']}:{m['port']}" == name]
+        report.check(f'graph/external origin {name} is an unobserved node called by the bundle',
+                     len(hits) == 1 and meta[hits[0]].get('observed') is False
+                     and (bundle, 'CALLS', hits[0]) in edge_set, str(hits))
+    dev = ref_id[truth['modules']['bundle']]
+    modules = {meta[d].get('label'): d for s_, r, d in edge_set
+               if r == 'CONTAINS' and s_ == dev and meta.get(d, {}).get('section_kind') == 'module'}
+    report.equal('graph/module sections only for modules with facts', set(modules), set(truth['modules']['names']))
+    report.check('graph/bundle LOADS its source map', (dev, 'LOADS', ref_id[truth['modules']['map']]) in edge_set)
+    report.check('graph/module section names its endpoint',
+                 all('/api/dev/reports/summary' in embed[m] for m in modules.values()))
 
     # --- secrets ---------------------------------------------------------
     key = truth['aws_key']

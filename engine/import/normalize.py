@@ -213,6 +213,8 @@ def pass_d_distill(annotated, boilerplate):
             a['page'] = d.page_facts(a['_resp_body'], host_boilerplate)
         elif a['resp_class'] == 'static_asset' and d.is_javascript(a['resp_content_type']) and a['_resp_body']:
             a['js'] = d.jsfacts.compact(d.jsfacts.js_facts(a['_resp_body'], page_origin))
+        elif a['resp_class'] in ('static_asset', 'api_structured') and d.jsfacts.is_sourcemap(a['endpoint'], a['_resp_body']):
+            a['jsmap'] = d.jsfacts.compact_map(a['_resp_body'], page_origin)
         a['resp_features'] = respf
         a['resp_distilled'] = distilled
         a['resp_schema_sig'] = schema_sig

@@ -13,7 +13,7 @@ LOAD_BATCH = 32
 # Bump whenever extract_features / identifier_pairs output can change
 # (distill.py, normalize.py, parse.py).
 FEATURE_VERSION = 'features-v4'
-IDENTIFIER_VERSION = 'identifiers-v4'
+IDENTIFIER_VERSION = 'identifiers-v5'
 PARSER_VERSION = 'parser-v2'
 
 
@@ -40,6 +40,9 @@ def identifier_pairs(item):
     if d.is_javascript(d.header_get(response.get('headers', {}), 'content-type')):
         pairs += [('response.js_credential', value) for value in
                   d.jsfacts.secret_values(response.get('analysis_body', ''))]
+    elif d.jsfacts.is_sourcemap(d.urlparse(item['url']).path, response.get('analysis_body', '')):
+        pairs += [('response.js_credential', value) for value in
+                  d.jsfacts.map_secret_values(response.get('analysis_body', ''))]
     for side in ('request', 'response'):
         http = item.get(side, {})
         pairs += [(side + '.' + field, value) for field, value in

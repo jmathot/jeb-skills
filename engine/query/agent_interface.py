@@ -449,6 +449,9 @@ def graph_view(agent, target, rel=None, direction='both', depth=1, limit=50):
     edges = edges[:limit]
     ids = {i for m in edges for i in (m['src'], m['dst'])} | {target}
     nodes = agent.get_many(sorted(ids))
+    # Findings live in `attacks`; TARGETS edges point at routes but start there.
+    for found_id, found in agent.get_many([i for i in sorted(ids) if i not in nodes], 'attacks').items():
+        nodes[found_id] = {'metadata': {'node_type': 'finding', **found['metadata']}}
     label = lambda i: ({'id': i, **{k: nodes[i]['metadata'].get(k, '') for k in
                                     ('node_type', 'method', 'scheme', 'host', 'port', 'endpoint_template', 'summary') if nodes[i]['metadata'].get(k, '') != ''}}
                        if i in nodes else {'id': i})

@@ -102,6 +102,22 @@ def _diversity_key(doc_id, meta):
     return (meta.get('anchor_id') or doc_id,)
 
 
+SYMMETRIC_RELS = ('RELATED',)
+
+
+def _fold_symmetric(rows):
+    """One row per (rel, other) for relations stored in both directions."""
+    seen, folded = {}, []
+    for rel, direction, other in rows:
+        if rel in SYMMETRIC_RELS:
+            if (rel, other) in seen:
+                folded[seen[(rel, other)]] = (rel, 'both', other)
+                continue
+            seen[(rel, other)] = len(folded)
+        folded.append((rel, direction, other))
+    return folded
+
+
 def _attach_neighbors(agent, results):
     """A bounded one-hop summary per result: one edges read, one graph read."""
     if agent.collection_name != 'graph' or not results:
@@ -116,7 +132,7 @@ def _attach_neighbors(agent, results):
     labels = agent.get_many([other for rows in by_node.values()
                              for _, _, other in rows[:MAX_NEIGHBORS]])
     for result in results:
-        rows = by_node.get(result['id'], [])
+        rows = _fold_symmetric(by_node.get(result['id'], []))
         if not rows:
             continue
         result['neighbors'] = [

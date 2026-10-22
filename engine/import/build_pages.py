@@ -20,6 +20,7 @@ import ontology as o
 from storage import origin as format_origin
 
 MAX_STUB_ROUTES_PER_HOST = 200
+MAX_EXTERNAL_ORIGINS = 100
 MAX_LINKS_PER_PAGE = 30
 SECTION_TEXT_CAP = 2500
 
@@ -96,6 +97,27 @@ def add_page_nodes(chunks, edges, routes, route_by_key, annotated, entity_of, ch
     def add_edge(src, src_type, rel, dst, dst_type, **kw):
         edges.add(src, src_type, rel, dst, dst_type, **kw)
 
+    external = {}                          # unobserved origin -> node id
+
+    def reference_origin(route, target_origin):
+        """CALLS edge to a third-party origin the capture never requested."""
+        node_id = origin_ids.get(target_origin) or external.get(target_origin)
+        if node_id is None:
+            if len(external) >= MAX_EXTERNAL_ORIGINS:
+                d.LEDGER['graph.external_origins_dropped_by_cap'] += 1
+                return
+            parsed = urlparse(target_origin)
+            node_id = external[target_origin] = d.md5('origin|external|' + target_origin)
+            text = f'origin referenced by client code but never requested in the capture: {target_origin}'
+            meta = {'scheme': parsed.scheme, 'host': parsed.hostname or '', 'port': parsed.port or 0,
+                    'endpoint_template': '{origin}', 'method': '', 'node_kind': 'origin',
+                    'is_static': False, 'instance_count': 0, 'doc_kind': 'graph', 'node_type': o.ORIGIN,
+                    'anchor_id': node_id, 'observed': False,
+                    'summary': d._truncate(f'unobserved origin {target_origin}', d.SUMMARY_CAP)}
+            chunks.append({'id': node_id, 'embed_text': text, 'page_content': text, 'metadata': meta})
+            d.LEDGER['graph.external_origin_nodes'] += 1
+        add_edge(route['id'], o.ROUTE, 'CALLS', node_id, o.ORIGIN)
+
     def js_edges(route, origin, js):
         for name, version in js.get('libs', []):
             add_edge(route['id'], o.ROUTE, 'USES_LIB', f'lib:{name}@{version}', o.LIB)
@@ -110,8 +132,52 @@ def add_page_nodes(chunks, edges, routes, route_by_key, annotated, entity_of, ch
                 stub_refs[(origin, verb, template)].add(route['id'])
             else:
                 d.LEDGER['js.endpoints_on_unobserved_origins'] += 1
-        if js.get('origins'):
-            d.LEDGER['js.external_origins'] += len(js['origins'])
+                reference_origin(route, target_origin)
+        for raw in js.get('origins', []):
+            d.LEDGER['js.external_origins'] += 1
+            reference_origin(route, _target_origin(origin, raw)[0])
+
+    maps = {}                              # source-map route id -> compact module facts
+    for a in annotated:
+        if a.get('jsmap'):
+            mapped = route_by_key.get((a['scheme'], a['host'], a['port'], a['method'], a['endpoint_template']))
+            if mapped is not None:
+                maps[mapped['id']] = a['jsmap']
+
+    def add_modules(route, origin, js):
+        """Module Sections of one bundle: webpack module names and/or its paired source map."""
+        modules = {name: {'endpoints': [(m, p) for m, p, mod in js['endpoints'] if mod == name],
+                          'secrets': js['modules'][name].get('secrets', 0)}
+                   for name in js.get('modules', {})}
+        map_url = js.get('sourcemap_url', '')
+        if map_url and not map_url.startswith('data:'):
+            map_origin, map_path = _target_origin(origin, urljoin(route['endpoint_template'], map_url))
+            map_route, _ = resolver.resolve(map_origin, map_path, 'GET')
+            if map_route is not None:
+                add_edge(route['id'], o.ROUTE, 'LOADS', map_route['id'], o.ROUTE)
+                mapped = maps.get(map_route['id'])
+                if mapped:
+                    for name, found in mapped['modules'].items():
+                        modules[name] = {'endpoints': [tuple(e) for e in found['endpoints']],
+                                         'secrets': len(found['secrets'])}
+                    js_edges(route, origin, {'endpoints': [(m, p, '') for found in mapped['modules'].values()
+                                                           for m, p in found['endpoints']], 'libs': []})
+                    d.LEDGER['js.maps_paired'] += 1
+        ranked = sorted(modules.items(), key=lambda kv: (-len(kv[1]['endpoints']) - kv[1]['secrets'], kv[0]))
+        d.LEDGER['js.modules_dropped_by_cap'] += max(0, len(ranked) - jsfacts.MAX_MODULES_PER_BUNDLE)
+        for order, (name, found) in enumerate(ranked[:jsfacts.MAX_MODULES_PER_BUNDLE]):
+            section_id = d.md5('module|' + route['id'] + '|' + name)
+            shown = ', '.join((f'{m} ' if m != 'ANY' else '') + p for m, p in found['endpoints'][:12])
+            text = d._fit([(f"module {name} of client code {route['endpoint_template']}", 200),
+                           ('endpoints: ' + shown if shown else '', 600),
+                           (f"credential-shaped literals: {found['secrets']}" if found['secrets'] else '', 80)])
+            meta = _node_meta(route, 'section', '{section}', '', doc_kind='graph', node_type=o.SECTION,
+                              anchor_id=route['id'], section_kind='module', label=name,
+                              summary=d._truncate(f'module {name}', d.SUMMARY_CAP))
+            chunk = {'id': section_id, 'embed_text': text, 'page_content': text, 'metadata': meta,
+                     'embedding_title': name}
+            chunks.append(chunk)
+            add_edge(route['id'], o.ROUTE, 'CONTAINS', section_id, o.SECTION, ord=order)
 
     js_seen = set()
     for a in annotated:
@@ -130,6 +196,7 @@ def add_page_nodes(chunks, edges, routes, route_by_key, annotated, entity_of, ch
             chunk['embed_text'] = d._fit([(chunk['embed_text'], 1000), (summary, 500)])
             chunk['metadata']['js_endpoints'] = js.get('endpoints_total', 0)
             js_edges(route, origin, js)
+            add_modules(route, origin, js)
 
         if not page:
             continue

@@ -14,7 +14,9 @@ tests/test_units.py`). On the fixture, embedded records fell from 717 to 197.
 
 **Done:** P0-1..5, T-1, T-2, T-8 (as `tests/test_units.py`), P1-1, P1-4..9,
 the P2 items for the chromadb pin, the shared read lock and the case-insensitive
-host filter, and graph Phases 1-6 and 7 (baselines). P1-2 and P1-3 are resolved by
+host filter, and graph Phases 1-7, fixture pages for every page and bundle shape, module
+sections with source-map pairing, external `Origin` nodes, and `graph` showing
+findings. P1-2 and P1-3 are resolved by
 construction: diversity is keyed on `anchor_id`, and findings/synthetic nodes are
 exempt.
 
@@ -24,14 +26,10 @@ exempt.
 - P2 remainder: header/body split, `find_similar` seed parent, missing-DB message,
   `--where '{}'`, cosine validation, bootstrap and `install.sh` fixes.
 - A TypeScript test for `buildArgv`.
-- Graph: external `Origin` nodes (`observed=false`) for third-party hosts named by
-  client code (counted in the ledger only); pairing a captured `.map` with its
-  bundle and per-module `Section` nodes (module names are recorded in facts but not
-  yet embedded); `make_capture.py` pages for every segmentation layer and a >2 MB
-  bundle, with tier A/B assertions (the pure pieces are covered in
-  `tests/test_units.py`); Tier B needle queries for the new page shapes.
-- Boilerplate removal works on chunk hashes plus repeated text blocks, not on
-  tag-path subtree hashes as originally planned.
+- Boilerplate: measured on the fixture (div-only chrome shared by most pages),
+  chunk-hash plus repeated-text-block removal strips it completely (tier A
+  asserts no chrome phrase survives in any page node), so tag-path subtree hashes
+  are not needed. Revisit only if a real capture leaves chrome behind.
 - Unverified assumptions about OpenCode v2 (symlinked plugin dependencies,
   config key names).
 

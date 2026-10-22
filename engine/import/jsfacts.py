@@ -204,6 +204,33 @@ def sourcemap_facts(map_json, page_origin=''):
     return modules
 
 
+def is_sourcemap(path, body):
+    """A captured source map: `.map` path (query ignored) with a version/sources header."""
+    if not str(path or '').split('?', 1)[0].endswith('.map') or not body:
+        return False
+    head = body[:2000]
+    return '"version"' in head and ('"sources"' in head or '"sections"' in head or '"mappings"' in head)
+
+
+def compact_map(map_json, page_origin=''):
+    """Persistable per-module facts of a source map: names, endpoints, credential
+    shapes. Never values (see `map_secret_values`)."""
+    modules = sourcemap_facts(map_json, page_origin)
+    ranked = sorted(modules.items(), key=lambda kv: (-len(kv[1]['endpoints']) - len(kv[1]['secrets']), kv[0]))
+    return {'modules': {name: {'endpoints': [[m, p] for m, p, _ in facts['endpoints']][:MAX_ENDPOINTS],
+                               'secrets': [[n, sh] for n, sh, _v, _m in facts['secrets']][:MAX_SECRETS]}
+                        for name, facts in ranked[:MAX_MODULES_PER_BUNDLE]},
+            'modules_total': len(modules)}
+
+
+def map_secret_values(map_json):
+    """Credential-shaped literal values from a source map's embedded sources."""
+    values = set()
+    for facts in sourcemap_facts(map_json).values():
+        values.update(v for _n, _s, v, _m in facts['secrets'])
+    return sorted(values)
+
+
 def _extract(body, page_origin='', modules=None):
     literals, stats = lex_strings(body)
     starts = [pos for pos, _ in modules] if modules else []

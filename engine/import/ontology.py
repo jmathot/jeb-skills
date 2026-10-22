@@ -11,7 +11,7 @@ classes are only ever edge endpoints: their ids are `<class>:<value>` (`param:id
 """
 
 # Bump when node classes, relations, ids or the rendering of node text change.
-ONTOLOGY_VERSION = 'ontology-v1'
+ONTOLOGY_VERSION = 'ontology-v2'
 
 ORIGIN = 'origin'
 ROUTE = 'route'
@@ -54,7 +54,7 @@ RELATIONS = {
     'LINKS_TO': ({ROUTE}, {ROUTE}),
     'SUBMITS_TO': ({FORM}, {ROUTE}),
     'HAS_FIELD': ({FORM}, {PARAM}),
-    'CALLS': ({ROUTE}, {ROUTE}),
+    'CALLS': ({ROUTE}, {ROUTE, ORIGIN}),
     'LOADS': ({ROUTE}, {ROUTE}),
     'HAS_POSTURE': ({ROUTE}, {POSTURE}),
     'SETS_COOKIE': ({ROUTE}, {COOKIE}),
