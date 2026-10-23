@@ -3,13 +3,14 @@
 Lookup collections use fixed one-dimensional vectors and never call Ollama.
 Their records are accessed exclusively through get()/metadata equality.
 """
+import re
 import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
 from itertools import islice
 
-LOOKUP_COLLECTIONS = ('captures', 'exchanges', 'identifiers')
+LOOKUP_COLLECTIONS = ('captures', 'exchanges', 'identifiers', 'edges')
 LOOKUP_SCHEMA = 'jeb-observations-v1'
 PAGE_SIZE = 500
 
@@ -80,28 +81,75 @@ def delete_ids(collection, ids):
         collection.delete(ids=ids[start:start + PAGE_SIZE])
 
 
+_CASE_INSENSITIVE_ID = re.compile(
+    r'^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{16,})$')
+
+
+def normalize_identifier(value):
+    """The form an identifier value is stored and looked up in: UUIDs and hex
+    digests are case-insensitive, so they are lower-cased; everything else is verbatim."""
+    text = str(value)
+    return text.lower() if _CASE_INSENSITIVE_ID.match(text) else text
+
+
 def sync_identifiers(client, source_collection, records, replace=False):
     """Stream occurrences and reconcile only the supplied source documents.
 
     New rows are written before stale rows are deleted; retries are idempotent.
+    `replace=False` skips the per-document reconciliation scan, which is only
+    needed when a document may already have identifier rows (a re-import or a
+    changed extraction version) -- never for freshly created source documents.
     """
     collection = lookup_collection(client, 'identifiers')
+    pending, wanted, doc_ids = [], set(), []
     for record in records:
         desired = []
         for field, value in sorted(set(map(tuple, record.get('identifier_pairs', [])))):
-            meta = {'value': str(value), 'field': field, 'doc_id': record['id'],
+            value = normalize_identifier(value)
+            meta = {'value': value, 'field': field, 'doc_id': record['id'],
                     'source_collection': source_collection}
             if record.get('capture_id'):
                 meta['capture_id'] = record['capture_id']
             desired.append({'id': digest(meta), 'metadata': meta,
                             'document': f'{field}: {value}'})
-        put_records(collection, desired)
-        if replace:
-            wanted = {r['id'] for r in desired}
+        # Accumulate across records so one upsert covers the whole batch.
+        pending.extend(desired)
+        wanted.update(r['id'] for r in desired)
+        doc_ids.append(record['id'])
+    if pending:
+        put_records(collection, pending)
+    if replace and doc_ids:
+        # One filtered scan per group of documents, not one per document. New rows
+        # are already written, so a retry after a failure here is still idempotent.
+        for start in range(0, len(doc_ids), 100):
+            group = doc_ids[start:start + 100]
             stale = [r['id'] for r in scan(collection, include=(), where={'$and': [
-                {'source_collection': source_collection}, {'doc_id': record['id']}]})
+                {'source_collection': source_collection}, {'doc_id': {'$in': group}}]})
                      if r['id'] not in wanted]
             delete_ids(collection, stale)
+
+
+def sync_edges(client, edges, keep=None):
+    """Upsert graph edges, then delete derived edges that are no longer wanted.
+
+    `keep` is a metadata `where` selecting edges this call does not own (finding
+    `TARGETS` edges are written separately), which reconciliation must leave alone.
+    New rows are written first, so a retry after a failure is idempotent.
+    """
+    collection = lookup_collection(client, 'edges')
+    wanted = set()
+
+    def tracked():
+        for edge in edges:
+            wanted.add(edge['id'])
+            yield edge
+
+    for batch in batches(tracked()):
+        put_records(collection, batch)
+    where = {'src_type': {'$ne': 'finding'}}
+    stale = [r['id'] for r in scan(collection, include=(), where=where) if r['id'] not in wanted]
+    delete_ids(collection, stale)
+    return len(wanted)
 
 
 def update_project(captures, **fields):
@@ -110,13 +158,13 @@ def update_project(captures, **fields):
 
 
 @contextmanager
-def writer_lock(db_path):
+def writer_lock(db_path, shared=False):
     """OS-released advisory lock: concurrent writers fail, crashed writers unlock."""
     import fcntl
     Path(db_path).mkdir(parents=True, exist_ok=True)
     with open(Path(db_path) / '.jeb-writer.lock', 'a') as handle:
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError('Another J.E.B. writer is active for this project.') from exc
         try:

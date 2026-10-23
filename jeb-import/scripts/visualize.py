@@ -5,17 +5,16 @@ Two modes against a project's ChromaDB:
 
   --mode embedding (default)
     Renders the vector space as an interactive scatter (UMAP/t-SNE/PCA) so
-    you can inspect canonical documents and protocol-aware semantic child
-    vectors. Alongside the scatter it emits nearest-neighbour, tight-cluster,
-    collection/schema, representation coverage, and parent-child distance
+    you can inspect every embedded graph node. Alongside the scatter it emits
+    nearest-neighbour, tight-cluster, collection/schema and node-type
     diagnostics.
 
   --mode graph
-    Renders the `structure` collection as a site map: a tree of
-    pages/endpoints/actions under each host's auth_model root, entity nodes
-    linked to the endpoints that produce/consume them, colored by
+    Renders the `graph` + `edges` collections as a site map: a tree of
+    pages/endpoints/actions under each origin node (HAS_ROUTE / CHILD_OF),
+    data objects linked to the routes that return/accept them, colored by
     access_control posture, with an optional ring showing the worst
-    recorded `attacks` verdict per endpoint.
+    recorded `attacks` verdict per endpoint (via TARGETS edges).
 
 Usage:
   python visualize.py --db-path ./chroma_db --collection all \
@@ -25,7 +24,14 @@ Usage:
 Deps (viz only): numpy, scikit-learn, plotly, optional umap-learn.
   pip install -r requirements-viz.txt
 """
+if __name__ == '__main__':
+    import sys
+    import runtime
+    if not runtime.ACTIVE:
+        sys.exit(runtime.run('visualize'))
+
 import argparse
+import runtime
 import html
 import os
 import sys
@@ -41,14 +47,11 @@ except ImportError as e:
     sys.exit(f"Missing a viz dependency ({e.name}). Install with:\n"
              f"  pip install -r {os.path.join(os.path.dirname(__file__), 'requirements-viz.txt')}")
 
-KNOWN_COLLECTIONS = ('structure', 'behavior', 'attacks')
+KNOWN_COLLECTIONS = ('graph', 'attacks')
 DEFAULT_COLOR = {
-    'structure': 'node_kind',
-    'behavior': 'auth_role',
+    'graph': 'node_type',
     'attacks': 'vuln_class',
-    'canonical': 'doc_kind',
-    'segments': 'representation',
-    'all': 'collection',
+    'all': 'node_type',
 }
 NEAR_DUP_EPS = 0.05
 
@@ -106,31 +109,22 @@ def _connect(db_path):
 # ---------------------------------------------------------------------------
 
 def load(db_path, collections, sample=0):
-    """structure/behavior hold both canonical ('parent') and semantic child
-    ('segment') documents together, distinguished by the `granularity`
-    metadata field (v4+) rather than by collection name. --collection
-    canonical/segments load every known collection and keep only one record
-    type; a plain collection name loads both types from that collection."""
+    """`graph` holds every embedded node, told apart by its `node_type`
+    metadata; `attacks` holds findings. A plain collection name loads that
+    collection, `all` loads every known one."""
     client, have = _connect(db_path)
-    record_filter = None
     if collections == ['all']:
-        collections = [c for c in KNOWN_COLLECTIONS if c in have]
-    elif len(collections) == 1 and collections[0] in ('canonical', 'segments'):
-        record_filter = 'canonical' if collections[0] == 'canonical' else 'segment'
         collections = [c for c in KNOWN_COLLECTIONS if c in have]
     ids, embs, metas = [], [], []
     collection_info = {}
     population = []
     from storage import get_all
-    record_where = ({'granularity': 'parent'} if record_filter == 'canonical'
-                    else {'granularity': 'segment'} if record_filter else None)
     for name in collections:
         if name not in have:
             continue
         col = client.get_collection(name)
         collection_info[name] = dict(col.metadata or {})
-        population.extend((name, i) for i in get_all(
-            col, include=[], **({'where': record_where} if record_where else {}))['ids'])
+        population.extend((name, i) for i in get_all(col, include=[])['ids'])
     population.sort()
     total_count = len(population)
     if sample and total_count > sample:
@@ -157,10 +151,7 @@ def load(db_path, collections, sample=0):
         kept = 0
         for doc_id, emb, m in zip(got['ids'], got['embeddings'], got['metadatas']):
             m = dict(m or {})
-            record_type = m.get('granularity', 'parent')
-            record_type = 'canonical' if record_type == 'parent' else record_type
-            if record_filter and record_type != record_filter:
-                continue
+            record_type = m.get('node_type') or 'finding'
             m.setdefault('doc_kind', name)
             m['collection'] = name
             m['document_id'] = doc_id
@@ -207,19 +198,18 @@ def reduce_dims(embs, method, neighbors, min_dist):
 
 def _hover(m):
     """Hover text for an embedding-space point. Branches by node_kind/
-    collection so structure entity/auth_model docs and attacks docs — whose
+    collection so graph data-object/origin nodes and attacks docs — whose
     useful fields aren't method/status_code/auth_role — show what they
     actually carry instead of blanks."""
     collection = m.get('collection', '')
     kind = m.get('node_kind', '')
-    if collection == 'structure' and kind == 'entity':
+    if collection == 'graph' and kind == 'entity':
         lines = [
-            f"<b>ENTITY</b> identifier_field={m.get('identifier_field', '') or '-'}",
+            f"<b>DATA OBJECT</b> identifier_field={m.get('identifier_field', '') or '-'}",
             f"schema_sig={str(m.get('schema_sig', ''))[:12]}",
-            f"produced_by={m.get('produced_by', '') or '-'}",
-            f"consumed_by={m.get('consumed_by', '') or '-'}",
+            f"context={m.get('context', '') or '-'}",
         ]
-    elif collection == 'structure' and kind == 'auth_model':
+    elif collection == 'graph' and kind == 'auth_model':
         lines = [
             f"<b>AUTH_MODEL</b> @ {m.get('host', '')}",
             f"mechanisms={m.get('auth_mechanisms', '') or '-'}",
@@ -237,18 +227,19 @@ def _hover(m):
         ]
     else:
         lines = [
-            f"<b>{collection}</b> {m.get('method', '')} {m.get('endpoint_template', '')}",
-            f"representation={m.get('representation', 'canonical')} "
-            f"parent={m.get('parent_id', '-')}",
+            f"<b>{m.get('node_type', collection).upper()}</b> {m.get('method', '')} "
+            f"{m.get('endpoint_template', '')}",
+            f"anchor={m.get('anchor_id', '-')}",
             f"status={m.get('status_code', '')} "
             f"auth={m.get('auth_role', m.get('auth_mechanisms', ''))}",
+            f"context={m.get('context', '') or '-'}",
         ]
     lines.append(m.get('summary', ''))
     return "<br>".join(lines)
 
 
 def _cors_group_value(m, color_by):
-    """behavior.cors carries a `' creds'` suffix that structure.cors doesn't
+    """Behavior nodes' cors carries a `' creds'` suffix that route nodes' doesn't
     (see agent_interface.py's CORS_OPEN note). Grouping raw would split one
     posture into misleading separate legend buckets across --collection all;
     strip it for grouping only, hover text still shows the raw value."""
@@ -323,14 +314,14 @@ def cluster_report(embs, ids, metas, near_dup):
         tmpl = Counter(metas[i].get('endpoint_template', '') for i in idx).most_common(1)[0][0]
         collection = Counter(metas[i].get('collection', '')
                              for i in idx).most_common(1)[0][0]
-        representation = Counter(metas[i].get('representation', 'canonical')
+        representation = Counter(metas[i].get('record_type', '')
                                  for i in idx).most_common(1)[0][0]
         rows.append((len(idx), collection, representation, tmpl, ids[idx[0]]))
     rows.sort(reverse=True)
     out = ["<h3>Tightest clusters (candidate over-collapse / filter targets)</h3>",
            f"<p>{int(near_dup)} near-duplicate pairs (distance &lt; {NEAR_DUP_EPS}).</p>",
            "<table border=1 cellpadding=4 style='border-collapse:collapse'>",
-           "<tr><th>size</th><th>collection</th><th>representation</th>"
+           "<tr><th>size</th><th>collection</th><th>node type</th>"
            "<th>dominant endpoint_template</th><th>example id</th></tr>"]
     for size, collection, representation, tmpl, eid in rows[:20]:
         out.append(f"<tr><td>{size}</td><td>{html_escape(collection)}</td>"
@@ -360,74 +351,15 @@ def collection_report(collection_info, metas, scope=''):
             "".join(rows) + "</table>")
 
 
-def segment_report(embs, metas, collection_info, scope=''):
-    canonical = {}
-    representations = Counter()
-    parents = defaultdict(set)
-    segment_indices = []
-    for idx, meta in enumerate(metas):
-        if meta.get('record_type') == 'canonical':
-            canonical[(meta.get('collection'), meta.get('document_id'))] = idx
-            continue
-        parent_key = (meta.get('collection', ''), meta.get('parent_id', ''))
-        representations[(meta.get('collection', ''),
-                         meta.get('representation', '(none)'))] += 1
-        parents[parent_key].add(meta.get('representation', '(none)'))
-        segment_indices.append((idx, parent_key))
-
-    if not segment_indices:
-        return (f"<h3>{html_escape(scope)}Semantic segment diagnostics</h3>"
-                "<p>No segment-granularity documents loaded.</p>", np.asarray([]))
-
-    distances, unresolved = [], 0
-    for segment_idx, parent_key in segment_indices:
-        parent_idx = canonical.get(parent_key)
-        if parent_idx is None:
-            # e.g. --collection segments loads segment-granularity docs only.
-            unresolved += 1
-            continue
-        segment = embs[segment_idx]
-        parent = embs[parent_idx]
-        denom = np.linalg.norm(segment) * np.linalg.norm(parent)
-        distance = 1.0 - float(np.dot(segment, parent) / denom) if denom else 1.0
-        distances.append(distance)
-
-    coverage = Counter(len(reps) for reps in parents.values())
-    rep_rows = "".join(
-        f"<tr><td>{html_escape(collection)}</td><td>{html_escape(rep)}</td><td>{count}</td></tr>"
-        for (collection, rep), count in sorted(representations.items())
-    )
-    coverage_text = ", ".join(f"{count} representation(s): {parents_count} parent(s)"
-                              for count, parents_count in sorted(coverage.items()))
-    distance_text = "not available (canonical parents not loaded)"
-    if distances:
-        distance_text = (f"median={np.median(distances):.3f}, "
-                         f"p90={np.percentile(distances, 90):.3f}, "
-                         f"max={np.max(distances):.3f}")
-    report = (
-        f"<h3>{html_escape(scope)}Semantic segment diagnostics</h3>"
-        f"<p>parents represented: <b>{len(parents)}</b>; child vectors without a "
-        f"loaded parent: <b>{unresolved}</b>; parent-child cosine distance: "
-        f"<b>{distance_text}</b></p>"
-        f"<p>coverage: {html_escape(coverage_text or 'none')}</p>"
-        "<table border=1 cellpadding=4 style='border-collapse:collapse'>"
-        "<tr><th>segment collection</th><th>representation</th><th>vectors</th></tr>"
-        f"{rep_rows}</table>"
-    )
-    return report, np.asarray(distances)
-
-
-def parent_distance_histogram(distances):
-    import plotly.graph_objects as go
-    if not len(distances):
-        return None
-    fig = go.Figure(go.Histogram(x=distances, nbinsx=40,
-                                 marker_color='#d97706'))
-    fig.update_layout(
-        title="Semantic child-to-parent cosine distance",
-        xaxis_title="distance from child vector to canonical parent vector",
-        yaxis_title="segments", height=340, template='plotly_white')
-    return fig
+def node_type_report(metas, scope=''):
+    counts = Counter((m.get('collection', ''), m.get('record_type', '')) for m in metas)
+    rows = "".join(
+        f"<tr><td>{html_escape(collection)}</td><td>{html_escape(kind)}</td><td>{count}</td></tr>"
+        for (collection, kind), count in sorted(counts.items()))
+    return (f"<h3>{html_escape(scope)}Embedded nodes by type</h3>"
+            "<table border=1 cellpadding=4 style='border-collapse:collapse'>"
+            "<tr><th>collection</th><th>node type</th><th>vectors</th></tr>"
+            f"{rows}</table>")
 
 
 def stats_header(ids, embs, metas, near_dup, total_count=None):
@@ -463,11 +395,9 @@ def run_embedding_mode(args):
     print(f"Loading vectors from {args.db_path} ...")
     ids, embs, metas, collection_info, total_count = load(args.db_path, [args.collection], args.sample)
     full_embs, full_metas = embs, metas
-    full_scope = 'Sample-only (missing parents may be outside sample) ' if args.sample else 'Full-corpus '
+    full_scope = 'Sample-only ' if args.sample else 'Full-corpus '
     collections_html = collection_report(collection_info, full_metas, full_scope)
-    segments_html, parent_distances = segment_report(
-        full_embs, full_metas, collection_info, full_scope)
-    parent_hist = parent_distance_histogram(parent_distances)
+    segments_html = node_type_report(full_metas, full_scope)
 
     print(f"Reducing {len(ids)} vectors with {args.reduce} ...")
     coords, reducer = reduce_dims(embs, args.reduce, args.neighbors, args.min_dist)
@@ -489,8 +419,6 @@ def run_embedding_mode(args):
         scatter.to_html(full_html=False, include_plotlyjs='inline'),
         hist.to_html(full_html=False, include_plotlyjs=False),
     ]
-    if parent_hist is not None:
-        body.append(parent_hist.to_html(full_html=False, include_plotlyjs=False))
     body.extend([clusters_html, "</body></html>"])
     with open(out, 'w') as f:
         f.write("\n".join(body))
@@ -501,30 +429,33 @@ def run_embedding_mode(args):
 # Site-map graph mode
 # ---------------------------------------------------------------------------
 
-def load_structure(db_path, host=None):
-    """Loads canonical `structure` docs (+ `attacks` docs, if present) for
-    the graph view. entity docs carry host='' (they're cross-host by
-    design, see build_structure.py's entity_chunk), so --host never filters
-    them out."""
+def load_graph(db_path, host=None):
+    """Loads the structural `graph` nodes (routes, origins, data objects), every
+    stored edge, and the findings (id -> metadata) for the site-map view.
+    Data objects carry host='' (they are cross-host by design), so --host never
+    filters them out."""
     client, have = _connect(db_path)
-    if 'structure' not in have:
-        sys.exit("No 'structure' collection in this DB. Did you run the import pipeline?")
-    col = client.get_collection('structure')
-    got = col.get(where={'granularity': 'parent'}, include=['metadatas'])
+    if not {'graph', 'edges'} <= have:
+        sys.exit("No 'graph'/'edges' collections in this DB. Run process_burp.sh rebuild <project_dir>.")
+    from storage import scan
+    col = client.get_collection('graph', embedding_function=None)
+    got = col.get(where={'node_type': {'$in': ['route', 'origin', 'data_object']}},
+                  include=['metadatas'])
     nodes = {}
     for doc_id, m in zip(got['ids'], got['metadatas']):
         m = dict(m or {})
-        if host and m.get('node_kind') != 'entity' and m.get('host') != host:
+        if host and m.get('node_type') != 'data_object' and m.get('host') != host:
             continue
         nodes[doc_id] = m
     if not nodes:
-        sys.exit("No structure nodes found (check --host, or did the import run?).")
-    attacks = []
+        sys.exit("No graph nodes found (check --host, or did the import run?).")
+    edges = [dict(r['metadatas']) for r in scan(client.get_collection('edges', embedding_function=None))]
+    attacks = {}
     if 'attacks' in have:
-        acol = client.get_collection('attacks')
-        agot = acol.get(where={'granularity': 'parent'}, include=['metadatas'])
-        attacks = [dict(m or {}) for m in agot['metadatas']]
-    return nodes, attacks
+        acol = client.get_collection('attacks', embedding_function=None)
+        agot = acol.get(include=['metadatas'])
+        attacks = {i: dict(m or {}) for i, m in zip(agot['ids'], agot['metadatas'])}
+    return nodes, edges, attacks
 
 
 def _worst_verdict(counts):
@@ -536,177 +467,116 @@ def _worst_verdict(counts):
     return None
 
 
-def build_site_graph(nodes, attacks):
-    """Splits loaded structure docs into route nodes (page/endpoint/action/
-    auth_model) and entity nodes, and stamps each route node with its worst
-    recorded attack verdict (if any) for the ring overlay. Attack docs whose
-    `host` is blank (record-attack was given a bare path, not a full URL)
-    fall back to matching by endpoint_template alone."""
-    route_nodes = {i: m for i, m in nodes.items() if m.get('node_kind') != 'entity'}
-    entity_nodes = {i: m for i, m in nodes.items() if m.get('node_kind') == 'entity'}
+def build_site_graph(nodes, edges, attacks):
+    """Splits loaded nodes into route-side nodes (page/endpoint/action/origin) and
+    data-object nodes, and stamps each route with its worst recorded finding
+    verdict (found through `TARGETS` edges) for the ring overlay."""
+    route_nodes = {i: m for i, m in nodes.items() if m.get('node_type') != 'data_object'}
+    entity_nodes = {i: m for i, m in nodes.items() if m.get('node_type') == 'data_object'}
 
     from storage import origin
-    by_host_template = defaultdict(Counter)
-    for a in attacks:
-        verdict = a.get('verdict', 'inconclusive')
-        template = a.get('endpoint_template', '')
-        if a.get('scheme') and a.get('host') and a.get('port') and a.get('method'):
-            by_host_template[(origin(a), a['method'], template)][verdict] += 1
+    counts = defaultdict(Counter)
+    for e in edges:
+        if e['rel'] == 'TARGETS' and e['src'] in attacks:
+            counts[e['dst']][attacks[e['src']].get('verdict', 'inconclusive')] += 1
 
-    for m in route_nodes.values():
-        key = (origin(m), m.get('method', ''), m.get('endpoint_template', ''))
-        counts = by_host_template.get(key)
-        m['_origin'] = origin(m)
-        m['_attack_counts'] = dict(counts) if counts else {}
-        m['_attack_verdict'] = _worst_verdict(counts)
+    for doc_id, m in route_nodes.items():
+        m['_origin'] = origin(m) if m.get('host') else ''
+        found = counts.get(doc_id)
+        m['_attack_counts'] = dict(found) if found else {}
+        m['_attack_verdict'] = _worst_verdict(found)
 
     hosts = sorted({m['_origin'] for m in route_nodes.values() if m.get('host')})
     return hosts, route_nodes, entity_nodes
 
 
-class _TrieNode:
-    __slots__ = ('children', 'template', 'depth', 'x')
+def layout_site_graph(hosts, route_nodes, entity_nodes, edges, host_gap=3.0):
+    """Hierarchical tree layout (no networkx) read straight from the stored edges:
+    each origin node roots its routes (`HAS_ROUTE`), and `CHILD_OF` nests a route
+    under its nearest ancestor route. x is the classic leaves-get-sequential-x /
+    internal-nodes-average-children recursion; y is tree depth. Data objects have
+    no path position, so they sit below the tallest tree at the mean x of the
+    routes they are linked to (`RETURNS` = produces, `ACCEPTS` = consumes)."""
+    children, parent_of = defaultdict(list), {}
+    for e in edges:
+        if e['rel'] == 'CHILD_OF' and e['src'] in route_nodes and e['dst'] in route_nodes:
+            children[e['dst']].append(e['src'])
+            parent_of[e['src']] = e['dst']
+    roots = defaultdict(list)
+    origin_node = {}
+    for doc_id, m in route_nodes.items():
+        if m.get('node_type') == 'origin':
+            origin_node[m['_origin']] = doc_id
+    for e in edges:
+        if e['rel'] == 'HAS_ROUTE' and e['src'] in route_nodes and e['dst'] in route_nodes \
+                and e['dst'] not in parent_of:
+            roots[e['src']].append(e['dst'])
 
-    def __init__(self, depth):
-        self.children = {}
-        self.template = None
-        self.depth = depth
-        self.x = 0.0
+    def order(ids):
+        return sorted(ids, key=lambda i: (route_nodes[i].get('endpoint_template', ''),
+                                          route_nodes[i].get('method', ''), i))
 
-
-def _path_segments(template):
-    return [s for s in template.strip('/').split('/') if s]
-
-
-def _trie_insert(root, template):
-    node = root
-    for seg in _path_segments(template):
-        node = node.children.setdefault(seg, _TrieNode(node.depth + 1))
-    node.template = template
-
-
-def _trie_assign_x(node, counter):
-    if not node.children:
-        node.x = counter[0]
-        counter[0] += 1
-        return node.x
-    xs = [_trie_assign_x(c, counter) for c in node.children.values()]
-    node.x = sum(xs) / len(xs)
-    return node.x
-
-
-def _trie_collect(node, out):
-    if node.template is not None:
-        out.append(node)
-    for child in node.children.values():
-        _trie_collect(child, out)
-
-
-def layout_site_graph(hosts, route_nodes, entity_nodes, host_gap=3.0):
-    """Hand-rolled hierarchical tree layout (no networkx): per host, splits
-    every endpoint_template on '/' into a trie so `/api/orders/{id}` sits
-    under `/api/orders` under `/api`, assigns x by the classic
-    leaves-get-sequential-x / internal-nodes-average-children recursion, and
-    y by path depth. Each host's auth_model doc is that host's tree root.
-    Entity nodes have no path position, so they're dropped below the
-    tallest tree at the mean x of the endpoints they're linked to."""
-    templates_by_host = defaultdict(set)
-    for m in route_nodes.values():
-        if m.get('host'):
-            templates_by_host[m['_origin']].add(m['endpoint_template'])
-
-    pos = {}
-    template_pos = {}          # (host, template) -> (x, y) of the shared path node
-    parent_template_of = {}    # (host, template) -> parent template, nearest real ancestor
-    x_offset = 0.0
+    pos, x_offset = {}, 0.0
     for h in hosts:
-        root = _TrieNode(0)
-        root.template = '{auth-model}'
-        for t in sorted(templates_by_host.get(h, ())):
-            if t != '{auth-model}':
-                _trie_insert(root, t)
-        counter = [0]
-        _trie_assign_x(root, counter)
-        width = max(counter[0], 1)
-
-        def _walk(node, nearest_real):
-            if node.template is not None:
-                template_pos[(h, node.template)] = (x_offset + node.x, node.depth)
-                if nearest_real is not None:
-                    parent_template_of[(h, node.template)] = nearest_real
-                nearest_real = node.template
-            for child in node.children.values():
-                _walk(child, nearest_real)
-
-        _walk(root, None)
-        x_offset += width + host_gap
-
-    method_fanout = Counter()
-    for doc_id, m in route_nodes.items():
-        key = (m.get('_origin', ''), m.get('endpoint_template', ''))
-        base = template_pos.get(key)
-        if base is None:
+        top = origin_node.get(h)
+        if top is None:
             continue
-        n = method_fanout[key]
-        method_fanout[key] += 1
-        pos[doc_id] = (base[0] + n * 0.35, base[1])
+        counter = [0]
 
-    entity_links = defaultdict(list)   # entity doc id -> [route doc id, ...]
-    for doc_id, m in route_nodes.items():
-        for eid in (m.get('entity_ids') or '').split(','):
-            eid = eid.strip()
-            if eid:
-                entity_links[eid].append(doc_id)
+        def assign(node_id, depth):
+            kids = order(children.get(node_id, [])) if node_id in children else []
+            if node_id == top:
+                kids = order(roots.get(top, []))
+            if not kids:
+                x = counter[0]
+                counter[0] += 1
+            else:
+                xs = [assign(k, depth + 1) for k in kids]
+                x = sum(xs) / len(xs)
+            pos[node_id] = (x_offset + x, depth)
+            return x
+
+        assign(top, 0)
+        x_offset += max(counter[0], 1) + host_gap
+
+    produces, consumes = defaultdict(list), defaultdict(list)
+    for e in edges:
+        if e['dst'] in entity_nodes and e['src'] in route_nodes and e['src_type'] == 'route':
+            if e['rel'] == 'RETURNS':
+                produces[e['dst']].append(e['src'])
+            elif e['rel'] == 'ACCEPTS':
+                consumes[e['dst']].append(e['src'])
+    entity_links = {eid: {'produces': produces.get(eid, []), 'consumes': consumes.get(eid, [])}
+                    for eid in entity_nodes}
 
     max_y = max((y for _, y in pos.values()), default=0)
     entity_y = max_y + 2
     slot_seen = Counter()
-    for eid, m in entity_nodes.items():
-        linked = [d for d in entity_links.get(eid, []) if d in pos]
-        ex = (sum(pos[d][0] for d in linked) / len(linked)) if linked else x_offset / 2
+    for eid in entity_nodes:
+        linked = [r for r in produces.get(eid, []) + consumes.get(eid, []) if r in pos]
+        ex = (sum(pos[r][0] for r in linked) / len(linked)) if linked else x_offset / 2
         slot = round(ex)
         pos[eid] = (ex + slot_seen[slot] * 0.6, entity_y)
         slot_seen[slot] += 1
 
-    return pos, template_pos, parent_template_of, entity_links
+    hierarchy = []
+    for e in edges:
+        if e['rel'] in ('CHILD_OF', 'HAS_ROUTE') and e['src'] in pos and e['dst'] in pos:
+            if e['rel'] == 'HAS_ROUTE' and e['dst'] in parent_of:
+                continue
+            child, par = (e['src'], e['dst']) if e['rel'] == 'CHILD_OF' else (e['dst'], e['src'])
+            hierarchy.append((pos[child][0], pos[child][1], pos[par][0], pos[par][1]))
+    return pos, hierarchy, entity_links
 
 
-def build_hierarchy_edges(route_nodes, pos, template_pos, parent_template_of):
-    edges = []
-    for doc_id, m in route_nodes.items():
-        if doc_id not in pos:
-            continue
-        key = (m.get('_origin', ''), m.get('endpoint_template', ''))
-        parent_t = parent_template_of.get(key)
-        if parent_t is None:
-            continue
-        parent_pos = template_pos.get((key[0], parent_t))
-        if parent_pos is None:
-            continue
-        x0, y0 = pos[doc_id]
-        x1, y1 = parent_pos
-        edges.append((x0, y0, x1, y1))
-    return edges
-
-
-def build_entity_edges(route_nodes, entity_nodes, pos, entity_links):
+def build_entity_edges(pos, entity_links):
     edges = {'produces': [], 'consumes': []}
-    for eid, em in entity_nodes.items():
+    for eid, links in entity_links.items():
         if eid not in pos:
             continue
         ex, ey = pos[eid]
-        produced = set((em.get('produced_by') or '').split(','))
-        consumed = set((em.get('consumed_by') or '').split(','))
-        for doc_id in entity_links.get(eid, []):
-            m = route_nodes.get(doc_id)
-            if m is None or doc_id not in pos:
-                continue
-            rx, ry = pos[doc_id]
-            mt = f"{m.get('method', '')} {m.get('_origin', '')}{m.get('endpoint_template', '')}"
-            if mt in produced:
-                edges['produces'].append((rx, ry, ex, ey))
-            if mt in consumed:
-                edges['consumes'].append((rx, ry, ex, ey))
+        for kind in ('produces', 'consumes'):
+            edges[kind] += [(pos[r][0], pos[r][1], ex, ey) for r in links[kind] if r in pos]
     return edges
 
 
@@ -714,10 +584,9 @@ def _hover_structure(m):
     kind = m.get('node_kind', '')
     if kind == 'entity':
         lines = [
-            f"<b>ENTITY</b> identifier_field={m.get('identifier_field', '') or '-'}",
+            f"<b>DATA OBJECT</b> identifier_field={m.get('identifier_field', '') or '-'}",
             f"schema_sig={str(m.get('schema_sig', ''))[:12]}",
-            f"produced_by: {m.get('produced_by', '') or '-'}",
-            f"consumed_by: {m.get('consumed_by', '') or '-'}",
+            f"context: {m.get('context', '') or '-'}",
         ]
     elif kind == 'auth_model':
         lines = [
@@ -737,7 +606,7 @@ def _hover_structure(m):
             f"cookies_sent={m.get('cookies_sent', '') or '-'} "
             f"cookies_set={m.get('cookies_set', '') or '-'}",
             f"security-headers-missing={m.get('security_headers_missing', '') or '-'}",
-            f"entity_ids={m.get('entity_ids', '') or '-'}",
+            f"context: {m.get('context', '') or '-'}",
             f"seen {m.get('instance_count', '?')}×",
         ]
     counts = m.get('_attack_counts')
@@ -841,17 +710,15 @@ def graph_stats_header(route_nodes, entity_nodes, attacks, show_attacks):
 
 def run_graph_mode(args):
     out = args.out or 'site_map.html'
-    print(f"Loading structure from {args.db_path} ...")
-    nodes, attacks = load_structure(args.db_path, host=args.host)
+    print(f"Loading graph from {args.db_path} ...")
+    nodes, edges, attacks = load_graph(args.db_path, host=args.host)
     show_attacks = args.show_attacks
     if show_attacks is None:
         show_attacks = bool(attacks)
 
-    hosts, route_nodes, entity_nodes = build_site_graph(nodes, attacks)
-    pos, template_pos, parent_template_of, entity_links = layout_site_graph(
-        hosts, route_nodes, entity_nodes)
-    hierarchy_edges = build_hierarchy_edges(route_nodes, pos, template_pos, parent_template_of)
-    entity_edges = build_entity_edges(route_nodes, entity_nodes, pos, entity_links)
+    hosts, route_nodes, entity_nodes = build_site_graph(nodes, edges, attacks)
+    pos, hierarchy_edges, entity_links = layout_site_graph(hosts, route_nodes, entity_nodes, edges)
+    entity_edges = build_entity_edges(pos, entity_links)
     fig = build_graph_figure(route_nodes, entity_nodes, pos, hierarchy_edges, entity_edges,
                              show_attacks)
     header = graph_stats_header(route_nodes, entity_nodes, attacks, show_attacks)
@@ -874,15 +741,16 @@ def run_graph_mode(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v4 visualizer")
-    ap.add_argument('--db-path', default='./chroma_db')
+    ap = argparse.ArgumentParser(description="J.E.B. v4 visualizer", allow_abbrev=False)
+    runtime.add_server_args(ap)
+    location = ap.add_mutually_exclusive_group()
+    location.add_argument('--db-path')
+    location.add_argument('--project-dir')
     ap.add_argument('--mode', choices=['embedding', 'graph'], default='embedding',
                     help="embedding: vector-space scatter + diagnostics (default). "
-                         "graph: structure collection as a site map.")
+                         "graph: the graph collection as a site map.")
     ap.add_argument('--collection', default='all',
-                    help="[embedding mode] structure | behavior | attacks (loads both "
-                         "parent and segment docs) | canonical | segments (parent-only / "
-                         "segment-only, across every collection) | all")
+                    help="[embedding mode] graph | attacks | all")
     ap.add_argument('--reduce', choices=['umap', 'tsne', 'pca'], default='umap',
                     help="[embedding mode]")
     ap.add_argument('--color-by', default=None, help="[embedding mode]")
@@ -904,6 +772,7 @@ def main():
                     help="default: vector_space.html (embedding) / site_map.html (graph)")
     ap.add_argument('--label', default='')
     args = ap.parse_args()
+    args.db_path = os.path.join(args.project_dir, 'chroma_db') if args.project_dir else (args.db_path or './chroma_db')
 
     if args.mode == 'graph':
         run_graph_mode(args)

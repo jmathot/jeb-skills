@@ -1,5 +1,5 @@
 beautifulsoup4==4.12.3
 brotli
-chromadb
-ollama
+chromadb>=1.0,<2
 numpy
+lxml

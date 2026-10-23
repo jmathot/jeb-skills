@@ -1,16 +1,13 @@
 """
-J.E.B. v2 — Phase 3b: build the `structure` collection (the site map).
+Route, origin and data-object node content for `build_graph`.
 
-Aggregates annotated items into one node per (host, method, endpoint_template)
-  and emits one synthetic `auth_model` node per host summarising the
-  session/auth model across endpoints.
+Aggregates annotated items into one route per (origin, method, endpoint_template),
+one origin node per host summarising its session/auth model, and one data object
+per response/request schema seen at two or more routes.
 """
-import argparse
-import json
-from collections import Counter, OrderedDict, defaultdict
+from collections import Counter, OrderedDict
 
 import distill as d
-from build_behavior import segment_metadata
 
 CORS_RANK = {'*': 4, 'matches-origin': 3, 'null': 2, 'specific': 1, '': 0}
 ENTITY_JACCARD_THRESHOLD = 0.6
@@ -42,17 +39,6 @@ def _dominant_schema(items, sig_field, keys_field):
     return sig, keys
 
 
-def _union_identifier_pairs(items):
-    seen, out = set(), []
-    for a in items:
-        for pair in a.get('identifiers', []):
-            pair = tuple(pair)
-            if pair not in seen:
-                seen.add(pair)
-                out.append(pair)
-    return out
-
-
 def build_endpoint_nodes(annotated):
     groups = OrderedDict()
     for a in annotated:
@@ -69,6 +55,7 @@ def build_endpoint_nodes(annotated):
         cors = ''
         page_title = ''
         example_ids = []
+        graphql_operations, tech = [], []
         for a in items:
             param_names.update(a['param_names'])
             if a['resp_content_type']:
@@ -91,6 +78,11 @@ def build_endpoint_nodes(annotated):
                 cookies_set.add(_cookie_name(entry))
             cookies_sent.update(reqf['cookie_names'])
             sec_missing.update(respf['security_headers_missing'])
+            if a.get('graphql_operation') and a['graphql_operation'] not in graphql_operations:
+                graphql_operations.append(a['graphql_operation'])
+            for fact in respf.get('tech', []):
+                if fact not in tech:
+                    tech.append(fact)
             if CORS_RANK.get(respf['cors'], 0) > CORS_RANK.get(cors, 0):
                 cors = respf['cors']
             if a['is_static']:
@@ -130,6 +122,8 @@ def build_endpoint_nodes(annotated):
             'security_headers_missing': sorted(sec_missing),
             'cors': cors,
             'is_static': is_static,
+            'graphql_operations': graphql_operations[:24],
+            'tech': sorted(tech)[:d.TECH_CAP],
             'page_title': page_title,
             'path_depth': items[0]['path_depth'],
             'instance_count': len(items),
@@ -139,7 +133,6 @@ def build_endpoint_nodes(annotated):
             items, 'resp_schema_sig', 'resp_schema_keys')
         node['req_schema_sig'], node['req_schema_keys'] = _dominant_schema(
             items, 'req_schema_sig', 'req_schema_keys')
-        node['identifier_pairs'] = _union_identifier_pairs(items)
         nodes.append(node)
     return nodes
 
@@ -189,6 +182,7 @@ def endpoint_chunk(node, entity_of=None):
         'cookies_set': _csv(node['cookies_set']),
         'security_headers_missing': _csv(node['security_headers_missing']),
         'cors': node['cors'],
+        'tech': _csv(node.get('tech', [])),
         'is_static': node['is_static'],
         'instance_count': node['instance_count'],
         'path_depth': node['path_depth'],
@@ -201,8 +195,7 @@ def endpoint_chunk(node, entity_of=None):
                     f"{node['method']}|{node['endpoint_template']}|{node['node_kind']}")
     return {'id': node_id, 'embed_text': embed_text,
             'embedding_title': node.get('page_title', ''),
-            'page_content': "\n".join(pc), 'metadata': metadata,
-            'identifier_pairs': node.get('identifier_pairs', [])}
+            'page_content': "\n".join(pc), 'metadata': metadata}
 
 
 def auth_model_chunk(origin, model):
@@ -264,14 +257,18 @@ def _jaccard(a, b):
     return len(sa & sb) / len(sa | sb)
 
 
-def build_entities(nodes):
+def build_entities(nodes, extra=()):
     """Cross-endpoint structural correlation: group by response/request-body
     schema signature across ALL endpoints (not just within one, unlike
     behavior_collapse_key). A schema seen at 2+ distinct (method, template)
     pairs -- whether as a response shape, a request-body shape, or one
     endpoint's request matching another's response -- becomes one entity node
     linking every producing/consuming route. Near-identical (but not exactly
-    equal) schemas are recorded as lower-confidence `related` matches."""
+    equal) schemas are recorded as lower-confidence `related` matches.
+
+    `extra` adds producers that are not route responses: (node, schema_sig, keys)
+    for data embedded in a page, so a page and the API serving the same shape
+    share one entity."""
     by_sig = OrderedDict()
     for n in nodes:
         host = n['host']
@@ -287,6 +284,14 @@ def build_entities(nodes):
             e = by_sig.setdefault(qsig, {'keys': qkeys, 'produced_by': [], 'consumed_by': []})
             if ep not in e['consumed_by']:
                 e['consumed_by'].append(ep)
+
+    for n, sig, keys in extra:
+        host = n['host']
+        host = f'[{host}]' if ':' in host else host
+        ep = (n['method'], f"{n['scheme']}://{host}:{n['port']}{n['endpoint_template']}")
+        e = by_sig.setdefault(sig, {'keys': keys, 'produced_by': [], 'consumed_by': []})
+        if ep not in e['produced_by']:
+            e['produced_by'].append(ep)
 
     entities, entity_of = [], {}
     for sig, e in by_sig.items():
@@ -361,76 +366,3 @@ def entity_chunk(entity, entity_id):
     }
     return {'id': entity_id, 'embed_text': embed_text,
             'page_content': "\n".join(pc), 'metadata': metadata}
-
-
-def build_segments(nodes, auth_models, entity_of=None, entities=None):
-    chunks = []
-    for node in nodes:
-        parent = endpoint_chunk(node, entity_of)
-        for representation, text in d.structure_segment_texts(node).items():
-            metadata = segment_metadata(parent['metadata'])
-            metadata.update({'parent_id': parent['id'], 'representation': representation,
-                             'granularity': 'segment'})
-            chunks.append({
-                'id': d.md5(f"{parent['id']}|{representation}"),
-                'embed_text': text,
-                'embedding_title': parent.get('embedding_title', ''),
-                'page_content': text,
-                'metadata': metadata,
-            })
-    for origin, model in auth_models.items():
-        parent = auth_model_chunk(origin, model)
-        metadata = segment_metadata(parent['metadata'])
-        metadata.update({'parent_id': parent['id'], 'representation': 'auth_model',
-                         'granularity': 'segment'})
-        chunks.append({
-            'id': d.md5(f"{parent['id']}|auth_model"),
-            'embed_text': parent['embed_text'],
-            'page_content': parent['embed_text'],
-            'metadata': metadata,
-        })
-    for entity in (entities or []):
-        parent = entity_chunk(entity, (entity_of or {})[entity['schema_sig']])
-        metadata = segment_metadata(parent['metadata'])
-        metadata.update({'parent_id': parent['id'], 'representation': 'entity',
-                         'granularity': 'segment'})
-        chunks.append({
-            'id': d.md5(f"{parent['id']}|entity"),
-            'embed_text': parent['embed_text'],
-            'page_content': parent['embed_text'],
-            'metadata': metadata,
-        })
-    return chunks
-
-
-def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v3 Phase 3b: build structure docs")
-    ap.add_argument('input_file', nargs='?', default='annotated_traffic.json')
-    ap.add_argument('-o', '--output', required=True, help='explicit export destination')
-    args = ap.parse_args()
-
-    with open(args.input_file) as f:
-        data = json.load(f)
-    annotated = data['items']
-    auth_models = data.get('auth_models', {})
-
-    nodes = build_endpoint_nodes(annotated)
-    entities, entity_of = build_entities(nodes)
-    chunks = [endpoint_chunk(n, entity_of) for n in nodes]
-    for origin, model in auth_models.items():
-        chunks.append(auth_model_chunk(origin, model))
-    for entity in entities:
-        chunks.append(entity_chunk(entity, entity_of[entity['schema_sig']]))
-    n_parents = len(chunks)
-
-    chunks += build_segments(nodes, auth_models, entity_of, entities)
-
-    with open(args.output, 'w') as f:
-        json.dump(chunks, f, indent=2)
-    print(f"Built {n_parents} structure docs "
-          f"({len(auth_models)} auth-model node(s), {len(entities)} entity node(s)) "
-          f"+ {len(chunks) - n_parents} semantic segments. Saved to {args.output}")
-
-
-if __name__ == '__main__':
-    main()

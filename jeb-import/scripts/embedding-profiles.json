@@ -1,0 +1,29 @@
+{
+  "ollama-embeddinggemma2": {
+    "backend": "ollama",
+    "model": "embeddinggemma-2:latest",
+    "dimensions": 768,
+    "minDimensions": 128,
+    "allowedDimensions": [128, 256, 512, 768],
+    "contextTokens": 8192,
+    "scheme": "embeddinggemma2-v2-titled"
+  },
+  "litellm-gemini-embedding-2": {
+    "backend": "litellm",
+    "model": "gemini-embedding-2",
+    "dimensions": 3072,
+    "minDimensions": 128,
+    "allowedDimensions": [],
+    "contextTokens": 8192,
+    "scheme": "gemini-embedding-2-v1-titled"
+  },
+  "litellm-qwen3-embedding-8b": {
+    "backend": "litellm",
+    "model": "qwen3-embedding-8b",
+    "dimensions": 4096,
+    "minDimensions": 32,
+    "allowedDimensions": [],
+    "contextTokens": 32768,
+    "scheme": "qwen3-embedding-8b-v1-instruct"
+  }
+}

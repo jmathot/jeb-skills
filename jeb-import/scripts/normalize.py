@@ -24,6 +24,7 @@ from collections import defaultdict
 from urllib.parse import urlparse
 
 import distill as d
+from parse import analysis_text
 from storage import origin as format_origin
 
 SPA_ROUTE_THRESHOLD = 4       # identical HTML body across >= N routes => shell
@@ -47,7 +48,7 @@ def reconstruct_raw(item, full=False) -> str:
     if req.get('headers'):
         parts.append(_reconstruct_headers(req['headers']))
     parts.append("")
-    parts.append((req.get('analysis_body') if full and req.get('body_kind') == 'text'
+    parts.append((analysis_text(req) if full and req.get('body_kind') == 'text'
                   else req.get('body', '')) or '')
     parts.append("")
     parts.append("--- RESPONSE ---")
@@ -55,7 +56,7 @@ def reconstruct_raw(item, full=False) -> str:
     if resp.get('headers'):
         parts.append(_reconstruct_headers(resp['headers']))
     parts.append("")
-    parts.append((resp.get('analysis_body') if full and resp.get('body_kind') == 'text'
+    parts.append((analysis_text(resp) if full and resp.get('body_kind') == 'text'
                   else resp.get('body', '')) or '')
     return "\n".join(parts)
 
@@ -86,6 +87,8 @@ def pass_a(items, auth_cookie_names=None):
         resp_ct = d.resp_media_type(resp_headers)
         param_names = d.extract_param_names(method, url, req_ct, req_body)
         graphql_operation = d.graphql_operation(req_body, url)
+        req_semantic = (d.structured_semantic_values(req_body, d.VARIANT_KEY_VALUES, redact=True)[:8]
+                        if req_body and ('json' in req_ct or d._looks_json(req_body)) else [])
         cookies = (auth_cookie_names.get((scheme, host, port), set())
                    if isinstance(auth_cookie_names, dict) else auth_cookie_names)
         reqf = d.request_features(method, url, req_headers, param_names, cookies)
@@ -120,6 +123,7 @@ def pass_a(items, auth_cookie_names=None):
             'req_content_type': req_ct, 'resp_content_type': resp_ct,
             'param_names': param_names, 'param_count': len(param_names),
             'graphql_operation': graphql_operation,
+            'req_semantic': req_semantic,
             'req_schema_sig': req_schema_sig, 'req_schema_keys': req_schema_keys,
             'request_variant_sig': d.request_variant_signature(req_body, req_ct),
             'identifiers': identifiers,
@@ -199,10 +203,18 @@ def pass_c_boilerplate(annotated):
 def pass_d_distill(annotated, boilerplate):
     for a in annotated:
         respf = d.response_features(a['_resp_headers'], a.get('_req_origin', ''))
+        page_origin = format_origin(a)
+        host_boilerplate = boilerplate.get((a['scheme'], a['host'], a['port']), set())
         distilled, schema_sig, schema_keys = d.distill_response(
             a['resp_class'], a['_resp_body'], a['resp_content_type'],
-             respf['redirect_location'], boilerplate.get(
-                 (a['scheme'], a['host'], a['port']), set()))
+             respf['redirect_location'], host_boilerplate, page_origin)
+        # Graph facts: segmented page content, or a JavaScript bundle's endpoints.
+        if a['resp_class'] in ('html_document', 'spa_shell') and a['_resp_body']:
+            a['page'] = d.page_facts(a['_resp_body'], host_boilerplate)
+        elif a['resp_class'] == 'static_asset' and d.is_javascript(a['resp_content_type']) and a['_resp_body']:
+            a['js'] = d.jsfacts.compact(d.jsfacts.js_facts(a['_resp_body'], page_origin))
+        elif a['resp_class'] in ('static_asset', 'api_structured') and d.jsfacts.is_sourcemap(a['endpoint'], a['_resp_body']):
+            a['jsmap'] = d.jsfacts.compact_map(a['_resp_body'], page_origin)
         a['resp_features'] = respf
         a['resp_distilled'] = distilled
         a['resp_schema_sig'] = schema_sig
@@ -295,6 +307,8 @@ def _access_class(a, login_fps):
     if rc == 'redirect':
         loc = d.header_get(a.get('_resp_headers', {}), 'location')
         return 'auth_wall' if d.login_redirect(loc) else 'redirect'
+    if a.get('is_static') and 200 <= sc < 300 and rc not in ('spa_shell', 'empty'):
+        return 'static'
     if rc == 'spa_shell':
         return 'shell'
     if rc == 'empty':
@@ -308,7 +322,11 @@ def _access_class(a, login_fps):
             return 'static'
         return 'data' if 200 <= sc < 300 else 'other'
     if rc == 'html_document':
-        fp = d.page_fingerprint(body)
+        # extract_features already fingerprinted this body and persisted it as
+        # _login_fp, so reuse it rather than re-parsing the page here.
+        fp = a.get('_login_fp')
+        if fp is None:
+            fp = d.page_fingerprint(body)
         if (fp and fp in login_fps) or d.html_login_signals(body)['is_login']:
             return 'auth_wall'
         return 'data' if 200 <= sc < 300 else 'other'

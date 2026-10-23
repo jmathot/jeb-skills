@@ -1,5 +1,10 @@
 """Streaming capture import and rebuild. Chroma is the only persistent data store."""
-import argparse
+if __name__ == '__main__':
+    import sys
+    import runtime
+    if not runtime.ACTIVE:
+        sys.exit(runtime.run('import'))
+
 from collections import Counter
 import hashlib
 import json
@@ -8,16 +13,22 @@ import sys
 from urllib.parse import urlparse
 
 import chromadb
-import build_behavior
-import build_structure
+import runtime
+import build_graph
 import distill as d
-from embedding import embedding_profile, make_ollama_ef
-from parse import iter_items
-from storage import (batches, digest, lookup_collection, put_records, scan, delete_ids,
-                     sync_identifiers, writer_lock, update_project)
-from streaming import (FEATURE_VERSION, IDENTIFIER_VERSION, PARSER_VERSION,
+from ontology import ONTOLOGY_VERSION
+from embedding import embedding_profile, make_embedding_ef
+from parse import hydrate_item, iter_items, storable
+from storage import (LOOKUP_COLLECTIONS, batches, digest, lookup_collection, put_records,
+                     scan, delete_ids, sync_edges, sync_identifiers, writer_lock, update_project)
+from streaming import (FEATURE_VERSION, IDENTIFIER_VERSION, LOAD_BATCH, PARSER_VERSION,
                        extract_features, identifier_pairs, annotate_features, hydrate_chunks)
 from vector_store import semantic_collection, store
+
+# The embedded collections, mirroring COLLECTIONS in the query skill;
+# storage.LOOKUP_COLLECTIONS are never embedded.
+EMBEDDED_COLLECTIONS = ('graph', 'attacks')
+LEGACY_COLLECTIONS = ('structure', 'behavior')
 
 
 def source_digest(path):
@@ -26,6 +37,20 @@ def source_digest(path):
         for block in iter(lambda: handle.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def collection_counts(client):
+    """Record counts per collection, split the way the database is built.
+
+    A project holds six collections and only the embedded two are semantic search
+    targets; `status` reports the split so that is visible without reading the
+    source. Absent names are omitted -- a project mid-import has fewer.
+    """
+    present = {c.name for c in client.list_collections()}
+    groups = {'embedded': EMBEDDED_COLLECTIONS, 'lookup': LOOKUP_COLLECTIONS}
+    return {group: {name: client.get_collection(name, embedding_function=None).count()
+                    for name in names if name in present}
+            for group, names in groups.items()}
 
 
 def project_config(captures, auth_cookies=None, auto_detect=None):
@@ -105,6 +130,10 @@ def ingest(client, captures, xml_file, config):
         if meta.get('state') in ('ready', 'complete', 'indexing') and meta.get('parser_version') == PARSER_VERSION:
             print('Capture already retained; rebuilding only when analysis/index versions changed.')
             return capture_id
+    # A capture with no prior record cannot have pre-existing exchange or identifier
+    # rows (exchange ids derive from this capture's content digest), so the
+    # reconciliation work below is only needed for a re-import.
+    fresh = not previous['ids']
     meta = {'state': 'parsing', 'source': str(Path(xml_file).resolve()), 'parser_version': PARSER_VERSION}
     document = previous['documents'][0] if previous['ids'] else json.dumps(config)
     def save():
@@ -114,7 +143,7 @@ def ingest(client, captures, xml_file, config):
     count, occurrences = 0, Counter()
     try:
         for group in batches(iter_items(xml_file), 20):
-            records = []
+            records, pairs = [], []
             for item in group:
                 p = urlparse(item['url'])
                 if not p.scheme or not p.hostname or not item['method']:
@@ -131,18 +160,19 @@ def ingest(client, captures, xml_file, config):
                     'host': p.hostname, 'scheme': p.scheme, 'port': p.port or (443 if p.scheme == 'https' else 80),
                     'method': item['method'].upper(), 'url': item['url'], 'time': item.get('time', ''),
                     'feature_version': FEATURE_VERSION, '_features': json.dumps(features),
-                    'identifier_version': ''}, 'document': json.dumps(item)})
+                    'identifier_version': IDENTIFIER_VERSION}, 'document': json.dumps(storable(item))})
+                pairs.append(identifier_pairs(item))
                 count += 1
-            put_records(exchanges, records)
             sync_identifiers(client, 'exchanges', ({'id': r['id'], 'capture_id': capture_id,
-                'identifier_pairs': identifier_pairs(json.loads(r['document']))} for r in records), replace=True)
-            exchanges.update(ids=[r['id'] for r in records],
-                             metadatas=[{'identifier_version': IDENTIFIER_VERSION} for _ in records])
-        # Parser upgrades can change the number of retained records.
-        stale = [r['id'] for r in scan(exchanges, where={'capture_id': capture_id})
-                 if r['metadatas']['source_item'] >= count]
-        sync_identifiers(client, 'exchanges', ({'id': i, 'identifier_pairs': []} for i in stale), replace=True)
-        delete_ids(exchanges, stale)
+                'identifier_pairs': pr} for r, pr in zip(records, pairs)),
+                replace=not fresh)
+            put_records(exchanges, records)
+        if not fresh:
+            # Parser upgrades can change the number of retained records.
+            stale = [r['id'] for r in scan(exchanges, where={'capture_id': capture_id})
+                     if r['metadatas']['source_item'] >= count]
+            sync_identifiers(client, 'exchanges', ({'id': i, 'identifier_pairs': []} for i in stale), replace=True)
+            delete_ids(exchanges, stale)
         meta.update(state='ready', exchange_count=count, error='')
         save()
         return capture_id
@@ -152,18 +182,37 @@ def ingest(client, captures, xml_file, config):
         raise
 
 
+def loss_ledger(annotated):
+    """Counts of what the derived indexes dropped or merged, for `status` and the
+    import summary. Cap-driven counters come from distill.LEDGER; the rest are
+    read straight off the annotated observations."""
+    ledger = d.ledger_snapshot()
+    raw_routes = {(a['scheme'], a['host'], a['port'], a['endpoint']) for a in annotated}
+    templates = {(a['scheme'], a['host'], a['port'], a['endpoint_template']) for a in annotated}
+    ledger.update({
+        'observations': len(annotated),
+        'routes_raw': len(raw_routes),
+        'routes_after_templating': len(templates),
+        'routes_merged_by_templating': len(raw_routes) - len(templates),
+        'response_bodies_truncated_in_preview': sum(1 for a in annotated if a.get('resp_body_truncated')),
+        'request_bodies_truncated_in_preview': sum(1 for a in annotated if a.get('req_body_truncated')),
+        'responses_undecodable': sum(1 for a in annotated if a.get('resp_decode_error')),
+    })
+    return dict(sorted(ledger.items()))
+
+
 def rebuild_project(client, captures, config, force=False):
     exchanges = lookup_collection(client, 'exchanges')
-    ef = make_ollama_ef()
+    ef = make_embedding_ef()
     profile = embedding_profile(ef)
-    version = digest([config, FEATURE_VERSION, IDENTIFIER_VERSION, profile])
+    version = digest([config, FEATURE_VERSION, IDENTIFIER_VERSION, ONTOLOGY_VERSION, profile])
     names = {c.name for c in client.list_collections()}
     if 'attacks_rebuild_backup' in names:
         force = True
     identifiers_missing = 'identifiers' not in names
-    profiles_ok = {'structure', 'behavior', 'identifiers'} <= names and all(
+    profiles_ok = {'graph', 'edges', 'identifiers'} <= names and not set(LEGACY_COLLECTIONS) & names and all(
         all((c.metadata or {}).get(k) == v for k, v in profile.items())
-        for c in client.list_collections() if c.name in ('structure', 'behavior', 'attacks'))
+        for c in client.list_collections() if c.name in EMBEDDED_COLLECTIONS)
     if not force and profiles_ok and (captures.metadata or {}).get('index_state') == 'complete' \
             and (captures.metadata or {}).get('index_version') == version:
         print('Project indexes are current.')
@@ -176,26 +225,58 @@ def rebuild_project(client, captures, config, force=False):
                          if r['metadatas'].get('state') in ('ready', 'complete', 'indexing'))
         if not allowed:
             raise ValueError('No ready captures to rebuild. Import or resume a capture first; existing indexes retained.')
-        load_item = lambda record_id: json.loads(exchanges.get(ids=[record_id], include=['documents'])['documents'][0])
-        compact, seen, aliases = [], {}, {}
-        # Raw bodies are never accumulated. Only compact features survive this pass.
-        for capture_id in allowed:
-            for row in scan(exchanges, where={'capture_id': capture_id}, page_size=100):
+        def load_many(ids):
+            """Fetch stored observations by id in one round trip."""
+            ids = [i for i in dict.fromkeys(ids) if i]
+            if not ids:
+                return {}
+            got = exchanges.get(ids=ids, include=['documents'])
+            return {i: hydrate_item(json.loads(doc)) for i, doc in zip(got['ids'], got['documents'])}
+
+        def resolve_features(rows, capture_id):
+            """Compact features for a page of scanned rows.
+
+            Rows whose features or identifiers predate the current versions are
+            repaired together: one document fetch, one identifier sync and one
+            metadata update per group instead of one of each per row.
+            """
+            resolved, stale = {}, []
+            for row in rows:
                 meta = row['metadatas']
                 features = json.loads(meta['_features']) if meta.get('feature_version') == FEATURE_VERSION else None
                 if features is None or identifiers_missing or meta.get('identifier_version') != IDENTIFIER_VERSION:
-                    item = load_item(row['id'])
+                    stale.append((row['id'], features))
+                else:
+                    resolved[row['id']] = features
+            for group in batches(stale, LOAD_BATCH):
+                items = load_many([record_id for record_id, _ in group])
+                sync, updates = [], []
+                for record_id, features in group:
+                    item = items[record_id]
                     features = features or extract_features(item)
-                    sync_identifiers(client, 'exchanges', [{'id': row['id'], 'capture_id': capture_id,
-                                      'identifier_pairs': identifier_pairs(item)}], replace=True)
-                    exchanges.update(ids=[row['id']], metadatas=[{'_features': json.dumps(features),
-                        'feature_version': FEATURE_VERSION, 'identifier_version': IDENTIFIER_VERSION}])
-                overlap = meta.get('overlap_key', row['id'])
-                if overlap not in seen:
-                    seen[overlap] = row['id']
-                    compact.append(features)
-                aliases[row['id']] = seen[overlap]
-        annotated, models = annotate_features(compact, load_item, config)
+                    resolved[record_id] = features
+                    sync.append({'id': record_id, 'capture_id': capture_id,
+                                 'identifier_pairs': identifier_pairs(item)})
+                    updates.append({'_features': json.dumps(features),
+                                    'feature_version': FEATURE_VERSION,
+                                    'identifier_version': IDENTIFIER_VERSION})
+                sync_identifiers(client, 'exchanges', sync, replace=True)
+                exchanges.update(ids=[record_id for record_id, _ in group], metadatas=updates)
+            return resolved
+
+        compact, seen, aliases = [], {}, {}
+        # Raw bodies are never accumulated. Only compact features survive this pass.
+        for capture_id in allowed:
+            for page in batches(scan(exchanges, where={'capture_id': capture_id}, page_size=100), 100):
+                features_by_id = resolve_features(page, capture_id)
+                for row in page:
+                    features = features_by_id[row['id']]
+                    overlap = row['metadatas'].get('overlap_key', row['id'])
+                    if overlap not in seen:
+                        seen[overlap] = row['id']
+                        compact.append(features)
+                    aliases[row['id']] = seen[overlap]
+        annotated, models = annotate_features(compact, load_many, config)
         # Derived associations live on exchanges; segments carry bounded facets only.
         by_id = {a['exchange_id']: a for a in annotated}
         for group in batches(aliases.items()):
@@ -214,62 +295,41 @@ def rebuild_project(client, captures, config, force=False):
         if identifiers_missing:
             from findings import repair_identifiers
             repair_identifiers(client, force=True)
-        nodes = build_structure.build_endpoint_nodes(annotated)
-        entities, entity_of = build_structure.build_entities(nodes)
-        def structure_chunks():
-            yield from (build_structure.endpoint_chunk(n, entity_of) for n in nodes)
-            yield from (build_structure.auth_model_chunk(o, m) for o, m in models.items())
-            yield from (build_structure.entity_chunk(e, entity_of[e['schema_sig']]) for e in entities)
-            yield from build_structure.build_segments(nodes, models, entity_of, entities)
-        store(semantic_collection(client, 'structure', ef, True), structure_chunks(), ef, reconcile=True)
-        del nodes, entities, entity_of
-        def behavior_chunks():
-            yield from build_behavior.build(annotated)
-            yield from build_behavior.build_segments(annotated)
-            yield from build_behavior.build_variants(annotated)
-        store(semantic_collection(client, 'behavior', ef, True),
-              hydrate_chunks(behavior_chunks(), load_item), ef, reconcile=True)
-        update_project(captures, index_state='complete', index_version=version, index_error='')
+        chunks, edges = build_graph.build_graph(annotated, models)
+        store(semantic_collection(client, 'graph', ef, True),
+              hydrate_chunks(chunks, load_many), ef, reconcile=True)
+        sync_edges(client, edges)
+        del chunks, edges
+        for legacy in LEGACY_COLLECTIONS:
+            if legacy in names:
+                client.delete_collection(legacy)
+        from findings import sync_finding_edges
+        sync_finding_edges(client)
+        ledger = loss_ledger(annotated)
+        update_project(captures, index_state='complete', index_version=version, index_error='',
+                       loss_ledger=json.dumps(ledger, sort_keys=True))
         print(f'Indexed {len(annotated)} distinct observations from {len(allowed)} ready captures.')
+        print('Loss ledger (what the caps cut; every exchange itself is retained verbatim): '
+              + json.dumps(ledger, sort_keys=True))
     except Exception as exc:
         update_project(captures, index_state='failed', index_error=str(exc))
         raise
 
 
 def main():
-    argv = sys.argv[1:]
-    commands = ('import', 'rebuild', 'status', 'abandon', 'export')
-    if argv and argv[0] not in commands and argv[0] not in ('--help', '-h'):
-        argv.insert(0, 'import')  # legacy capture.xml [project_dir] invocation
-    parser = argparse.ArgumentParser(description=__doc__)
-    subs = parser.add_subparsers(dest='command', required=True)
-    for command in commands:
-        p = subs.add_parser(command)
-        if command == 'import':
-            p.add_argument('xml_file')
-        if command == 'abandon':
-            p.add_argument('capture_id')
-        p.add_argument('project_dir', nargs='?', default='.')
-        if command in ('import', 'rebuild'):
-            p.add_argument('--auth-cookies', action='append', default=None,
-                           help='explicitly replace project custom cookie names; empty string clears')
-            group = p.add_mutually_exclusive_group()
-            group.add_argument('--auto-detect-auth-cookies', dest='auto_detect', action='store_true')
-            group.add_argument('--no-auto-detect-auth-cookies', dest='auto_detect', action='store_false')
-            p.set_defaults(auto_detect=None)
-            p.add_argument('--rebuild', action='store_true', help='force derived index rebuild')
-        if command == 'export':
-            p.add_argument('--collection', choices=('structure', 'behavior', 'attacks', 'captures', 'exchanges'), required=True)
-            p.add_argument('--output', required=True, help='explicit NDJSON destination; must not exist')
-    args = parser.parse_args(argv)
+    parser = runtime.import_parser()
+    args = parser.parse_args(runtime.import_argv(sys.argv[1:]))
     db_path = str(Path(args.project_dir).resolve() / 'chroma_db')
     if args.command != 'import' and not Path(db_path).is_dir():
         parser.error('Project database does not exist.')
-    with writer_lock(db_path):
+    with writer_lock(db_path, shared=args.command in ('status', 'export')):
+        d.ledger_reset()
         client = chromadb.PersistentClient(path=db_path)
         captures = lookup_collection(client, 'captures')
         if args.command == 'status':
-            print(json.dumps({'project': captures.metadata, 'captures': list(scan(captures))}, indent=2))
+            print(json.dumps({'project': captures.metadata,
+                              'collections': collection_counts(client),
+                              'captures': list(scan(captures))}, indent=2))
             return
         if args.command == 'export':
             col = client.get_collection(args.collection, embedding_function=None)
@@ -285,6 +345,7 @@ def main():
             update_project(captures, index_state='pending')
             print('Capture excluded; source records retained. Run rebuild to refresh derived indexes.')
             return
+        runtime.persist(captures)
         config = project_config(captures, args.auth_cookies, args.auto_detect)
         if args.command == 'import':
             ingest(client, captures, args.xml_file, config)

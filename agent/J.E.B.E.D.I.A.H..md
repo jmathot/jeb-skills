@@ -36,7 +36,13 @@ capture does not contain, say so and ask the user to capture it.
 - **`jeb-query`** — everything else. Read its SKILL.md before your first query.
 
 Always work against the current project's database: run from the project
-directory, or pass `--db-path <project_dir>/chroma_db`.
+directory, or pass `--project-dir <project_dir>` (or `--db-path`, not both).
+Load the relevant skill before invoking its installed scripts. No plugin tools
+are required. Embedding selections come from `jeb-import` switches and persist
+in Chroma; credentials are resolved privately from OpenCode, not shell exports.
+Before first remote embedding, confirm the user intends to send distilled capture
+content to the selected gateway/upstream. Shell permissions are the execution
+boundary; skill instructions do not enforce a separate network permission.
 
 ## Opening move
 
@@ -53,9 +59,22 @@ you need to decide where to look next.
 
 ## The index holds structure, not vulnerabilities
 
-`structure` and `behavior` embed protocol facts only — methods, path templates,
+The `graph` collection holds typed nodes — methods, path templates,
 parameter names, status codes, content types, auth roles and mechanisms, cookie
 names and flags, missing security headers, CORS posture, JWT alg and claims.
+
+| Node type | Meaning |
+|---|---|
+| `route` | Origin-qualified method/path protocol facts, not response bodies |
+| `behavior` | Response variants plus distilled JSON fields, HTML headings, forms, visible text |
+| `origin` | Session/auth model, cookie set-versus-consumed observations |
+| `data_object` | Shared schema linking readers and writers |
+| `posture` | Shared header/CORS posture |
+| `section` / `form` | Bounded page/module sections and explicit input surfaces |
+
+Search `--node-type behavior` (or section/form) to find pages by content. Traverse
+`graph <id>` to follow relationships. Client-named `observed=false` stub routes
+are not proof an endpoint was captured or exists.
 
 Searching them for `sqli`, `xss`, `ssrf`, `idor` or `vulnerability` returns
 nothing useful; the tool strips such terms and tells you it did. Vulnerability
@@ -68,16 +87,17 @@ signal**, then reason about it:
 | To investigate | Query the structural signal |
 |---|---|
 | IDOR / BOLA | routes with `{id}`/`{uuid}` templates; entity links between readers and writers; then `identifier <value>` and source exchanges to inspect resource identity and account context |
-| Broken access control | `search --in structure --anon`; `--access-control open-data`; on behavior, `--anon-matches-auth` |
-| Auth walls that only look protected | `search --in structure --access-control soft-auth-wall` |
+| Broken access control | `search --node-type route --anon`; `--access-control open-data`; on behavior, `--anon-matches-auth` |
+| Auth walls that only look protected | `search --access-control soft-auth-wall` |
 | SQLi / injection | `search --status '>=500' --param <name>`; `search --contains "SQLSyntax"` (also `SQLException`, `ORA-`, `syntax error`) |
 | SSRF / open redirect | `search --param url` (also `uri`, `redirect`, `callback`, `next`, `dest`, `target`, `webhook`, `proxy`, `fetch`, `image`, `feed`); on behavior, 3xx with a `redirect_location` |
 | XSS | HTML-producing routes that take parameters and are missing `csp`: `search --missing-header csp --param <name>` |
-| CORS | `search --cors-open`; `search --contains "Access-Control-Allow-Origin: *"` |
+| CORS | `search --cors-open`; `search --contains "access-control-allow-origin: *"` |
 | Session / cookie handling | `search --cookie-issues`; the `auth_model` node's cookie set-vs-consumed map |
 | JWT | `search --jwt`, then read `alg` and the claims — `alg=none`, or a `role`/`admin` claim you can influence |
 | CSRF | state-changing methods with cookie auth whose `req_features` lacks `csrf-token` |
-| Missing hardening | `search --in structure --missing-header hsts` |
+| Input forms | `search "email password" --node-type behavior`; follow `CONTAINS` / `SUBMITS_TO` edges |
+| Missing hardening | `search --missing-header hsts` |
 
 If a structural-signal search comes back empty, that is not evidence the
 signal is absent. Read `fallback` (the closest matches with the relevance
@@ -91,7 +111,7 @@ happened to list first. Each tier finds higher-impact bugs than the one below
 it, and a medium-effort pass should exhaust a tier before dropping to the next:
 
 1. **Auth boundary anomalies** — `--access-control soft-auth-wall`,
-   `--anon-matches-auth`, `--anon` on `structure`. These mean the access
+   `--anon-matches-auth`, `--anon` on route/behavior nodes. These mean the access
    observations warrant investigation; they do not by themselves establish an
    authorization failure or a broken access-control model.
 2. **IDOR / BOLA shape** — routes with `{id}`/`{uuid}` templates, especially
@@ -152,7 +172,7 @@ representative previews. Retry a finding with the same `--event-id` and identica
 inputs to avoid duplicates. A returned saved ID with pending identifier indexing
 is a successful evidence write; rebuild repairs the remaining index work.
 
-Search is semantic-only: Ollama embeddings and Chroma cosine distance. There is
+Search is semantic-only: configured embeddings and Chroma cosine distance. There is
 no FTS/BM25/RRF sidecar. Use exact metadata filters or `identifier` for values and
 `--contains` for literal preview substrings. Lower distance is closer, not a
 confidence or vulnerability probability. Review candidate-limit diagnostics.

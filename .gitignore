@@ -13,3 +13,6 @@ annotated_*.json
 structure_*.json
 behavior_*.json
 vector_space*.html
+.venv/
+.venv.lock
+*.egg-info/

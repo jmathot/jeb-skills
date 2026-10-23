@@ -53,10 +53,11 @@ def should_keep_header(name: str) -> bool:
 
 def parse_http(raw: bytes, is_request: bool):
     try:
-        if b'\r\n\r\n' in raw:
+        crlf, lf = raw.find(b'\r\n\r\n'), raw.find(b'\n\n')
+        if crlf >= 0 and (lf < 0 or crlf <= lf):
             head, _, body = raw.partition(b'\r\n\r\n')
             nl = '\r\n'
-        elif b'\n\n' in raw:
+        elif lf >= 0:
             head, _, body = raw.partition(b'\n\n')
             nl = '\n'
         else:
@@ -317,6 +318,43 @@ def process_item(item):
                                   'body_kind': body_kind,
                                   'decode_error': decode_error}
     return result
+
+
+def analysis_text(side: dict) -> str:
+    """Decoded text of one stored request/response side.
+
+    The exchange document keeps `raw_base64` (every byte, as captured) and the
+    bounded `body` preview, but not a third, fully decoded copy: that copy tripled
+    the size of each document and defeated MAX_STORED_BODY. It is rebuilt here
+    from the captured bytes whenever analysis or full-text search needs it.
+    """
+    if 'analysis_body' in side:
+        return side['analysis_body']
+    if side.get('body_kind') != 'text' or not side.get('raw_base64'):
+        return ''
+    parsed = parse_http(base64.b64decode(side['raw_base64']), is_request=False)
+    if not parsed:
+        return ''
+    transferred, _ = decode_transfer(parsed['body'], parsed['headers'])
+    decoded, _ = decode_content(transferred, parsed['headers'])
+    return decode_text(decoded, _header(parsed['headers'], 'content-type'))
+
+
+def hydrate_item(item: dict) -> dict:
+    """Restore `analysis_body` on a stored exchange (in place) and return it."""
+    for side in ('request', 'response'):
+        if isinstance(item.get(side), dict) and 'analysis_body' not in item[side]:
+            item[side]['analysis_body'] = analysis_text(item[side])
+    return item
+
+
+def storable(item: dict) -> dict:
+    """The exchange as persisted: everything except the derived decoded body."""
+    out = dict(item)
+    for side in ('request', 'response'):
+        if isinstance(out.get(side), dict):
+            out[side] = {k: v for k, v in out[side].items() if k != 'analysis_body'}
+    return out
 
 
 def iter_items(xml_file):

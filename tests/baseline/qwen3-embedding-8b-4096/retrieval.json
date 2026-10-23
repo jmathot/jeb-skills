@@ -1,0 +1,47 @@
+{
+  "counters": {
+    "normal.candidates": 1040,
+    "normal.dropped_by_distance": 0,
+    "normal.dropped_by_diversity": 310,
+    "normal.dropped_by_post_filter": 0,
+    "normal.eligible_after_filter": 1040,
+    "normal.fallback_only": 0,
+    "quick.candidates": 520,
+    "quick.dropped_by_distance": 0,
+    "quick.dropped_by_diversity": 133,
+    "quick.dropped_by_post_filter": 0,
+    "quick.eligible_after_filter": 520,
+    "quick.fallback_only": 0
+  },
+  "floors": {
+    "keyword.precision": 0.95,
+    "keyword.recall": 0.95,
+    "normal.hit_rate": 0.835,
+    "normal.mrr": 0.573,
+    "normal.ndcg": 0.554,
+    "normal.precision": 0.2,
+    "normal.recall": 0.653,
+    "quick.hit_rate": 0.758,
+    "quick.mrr": 0.561,
+    "quick.ndcg": 0.522,
+    "quick.precision": 0.289,
+    "quick.recall": 0.581
+  },
+  "last": {
+    "keyword.precision": 1.0,
+    "keyword.recall": 1.0,
+    "normal.distance_mean": 0.5002,
+    "normal.hit_rate": 0.8846,
+    "normal.mrr": 0.6234,
+    "normal.ndcg": 0.6037,
+    "normal.precision": 0.25,
+    "normal.recall": 0.7026,
+    "quick.distance_mean": 0.4816,
+    "quick.hit_rate": 0.8077,
+    "quick.mrr": 0.6115,
+    "quick.ndcg": 0.5719,
+    "quick.precision": 0.3385,
+    "quick.recall": 0.6314
+  },
+  "note": "floors are generous: HNSW query is approximate. Regenerate with --update-baseline after a deliberate retrieval change."
+}

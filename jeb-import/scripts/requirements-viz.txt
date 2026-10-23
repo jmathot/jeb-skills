@@ -2,4 +2,4 @@ numpy
 scikit-learn
 plotly
 umap-learn
-chromadb
+chromadb>=1.0,<2
