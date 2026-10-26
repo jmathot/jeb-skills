@@ -1,5 +1,7 @@
 """Standalone installation tests, always using disposable config directories."""
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -82,6 +84,59 @@ class InstallTests(unittest.TestCase):
         (self.config / 'skills').symlink_to(outside, target_is_directory=True)
         self.assertNotEqual(self.install('--force').returncode, 0)
         self.assertEqual(list(outside.iterdir()), [])
+
+    def test_lost_exec_bit_is_restored(self):
+        self.assertEqual(self.install().returncode, 0)
+        launcher = self.config / 'skills/jeb-import/jeb'
+        launcher.chmod(0o644)
+        self.assertEqual(self.install().returncode, 0)
+        self.assertTrue(os.access(launcher, os.X_OK))
+
+    def test_files_no_longer_shipped_are_pruned(self):
+        self.assertEqual(self.install().returncode, 0)
+        manifest = self.config / 'skills/.jeb-install.json'
+        entries = json.loads(manifest.read_text())
+        retired = self.config / 'skills/jeb-import/scripts/retired.sh'
+        retired.write_text('old alias')
+        edited = self.config / 'skills/jeb-query/scripts/edited.py'
+        edited.write_text('my edit')
+        entries['skills/jeb-import/scripts/retired.sh'] = hashlib.sha256(b'old alias').hexdigest()
+        entries['skills/jeb-query/scripts/edited.py'] = hashlib.sha256(b'original').hexdigest()
+        manifest.write_text(json.dumps(entries))
+        # A locally edited retired file is a conflict, never silently deleted.
+        self.assertNotEqual(self.install().returncode, 0)
+        self.assertTrue(retired.exists())
+        result = self.install('--force')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(retired.exists())
+        self.assertFalse(edited.exists())
+        self.assertEqual(next(edited.parent.glob('edited.py.backup-*')).read_text(), 'my edit')
+        self.assertNotIn('skills/jeb-import/scripts/retired.sh', json.loads(manifest.read_text()))
+
+    def test_dry_run_changes_nothing(self):
+        result = self.install('--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Would install', result.stdout)
+        self.assertFalse(self.config.exists())
+
+    def test_uninstall_removes_managed_files_and_keeps_edits(self):
+        self.config.mkdir()
+        (self.config / 'opencode.jsonc').write_text('{}')
+        self.assertEqual(self.install().returncode, 0)
+        (self.config / 'skills/jeb-import/scripts/venv/bin').mkdir(parents=True)
+        (self.config / 'skills/other-skill').mkdir()
+        edited = self.config / 'skills/jeb-query/SKILL.md'
+        edited.write_text('my notes')
+        self.assertEqual(self.install('--uninstall', '--dry-run').returncode, 0)
+        self.assertTrue((self.config / 'skills/jeb-import/jeb').exists())
+        result = self.install('--uninstall')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.config / 'skills/jeb-import').exists())
+        self.assertFalse((self.config / 'agents/J.E.B.E.D.I.A.H..md').exists())
+        self.assertEqual(next(edited.parent.glob('SKILL.md.backup-*')).read_text(), 'my notes')
+        self.assertTrue((self.config / 'skills/other-skill').is_dir())
+        self.assertEqual((self.config / 'opencode.jsonc').read_text(), '{}')
+        self.assertNotEqual(self.install('--uninstall').returncode, 0)
 
     def test_rollback_restores_files_if_atomic_replace_fails(self):
         spec = importlib.util.spec_from_file_location('installer', ROOT / 'scripts/install_skills.py')
