@@ -36,11 +36,12 @@ README writes `jeb` for the matching launcher.
 | Launcher | Commands |
 |---|---|
 | `~/.config/opencode/skills/jeb-import/jeb` | `setup`, `import`, `rebuild`, `status`, `abandon`, `export`, `viz` |
-| `~/.config/opencode/skills/jeb-query/jeb` | `endpoint`, `map`, `search`, `get`, `similar`, `identifier`, `evidence`, `graph`, `attacks`, `record-attack` |
+| `~/.config/opencode/skills/jeb-query/jeb` | `endpoint`, `map`, `search`, `get`, `similar`, `identifier`, `evidence`, `graph`, `attacks`, `record-attack`, `status` |
 
-Every command prints JSON (`import` and `rebuild` print progress lines first). Errors
-are a JSON object with `command` and `error`; exit status is 2 for usage errors and 1
-for failed commands. `jeb <command> -h` lists every option. `--project-dir` (and
+Every command prints compact JSON (`import` and `rebuild` print progress lines).
+Query results are a brief view without internal or default-valued keys; add `--full`
+for every stored field or `--pretty` to indent. Errors are a JSON object with
+`command` and `error`; exit status is 2 for usage errors and 1 for failed commands. `jeb <command> -h` lists every option. `--project-dir` (and
 `--opencode-server`) may come before or after the command.
 
 ## Install, update, uninstall

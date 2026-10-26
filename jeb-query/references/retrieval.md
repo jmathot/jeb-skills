@@ -8,14 +8,28 @@
 - Results resolve segments and variants to their canonical parent, and include the IDs
   and representations that matched.
 
-| `--depth` | Candidates | Max results | Raw preview chars |
-|---|---:|---:|---:|
-| quick | 20 | 5 | 0 |
-| normal (default) | 40 | 8 | 2,000 |
-| deep | 120 | 25 | 8,000 |
+| `--depth` | Candidates | Max results | Raw preview chars | Neighbours per result | Endpoint variants |
+|---|---:|---:|---:|---:|---:|
+| quick | 20 | 5 | 0 | 0 | 0 |
+| normal (default) | 40 | 8 | 2,000 | 3 | 3 |
+| deep | 120 | 25 | 8,000 | 6 | 48 |
 
 `--limit N` overrides the result count. Projects may override these defaults
-through jeb-import.
+through jeb-import. A truncated list reports its full size (`neighbors_total`,
+`variants_total`).
+
+## Result views
+
+- The default brief view keeps every key an agent acts on, in a fixed order (`id`,
+  `node_type`, `node_kind`, `method`, `host`, `endpoint_template`, status, `distance`,
+  `summary`, then the rest alphabetically).
+- It leaves out internal or redundant keys (`doc_kind`, `route_kind`, `path_depth`,
+  `param_count`, legacy `authenticated`, digests, `capture_id`), the defaults
+  `scheme=https`, `port=443` and `observed=true`, and empty values.
+- False flags are left out, so a missing flag means false. The exceptions are
+  `anon_allowed`, `complete` and `credential_present`, which are always shown.
+- `--full` shows every stored field. `get` always shows the full record. `--pretty`
+  indents the JSON.
 
 **Cutoff and candidates**
 - `--loose` disables the distance cutoff.

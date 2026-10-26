@@ -20,6 +20,8 @@ First skills release built on the plugin branch's engine. Upgrade notes are in
   pruned on update; launchers are always installed executable.
 - Evidence-preserving migrations: finding IDs, source observations and capture
   membership survive a rebuild.
+- `jeb-query status`, so an investigation can check index state without switching
+  skills. Query flags `--full` (every stored field) and `--pretty` (indented JSON).
 
 ### Changed
 - All settings are command-line switches saved in the project's Chroma metadata.
@@ -28,6 +30,15 @@ First skills release built on the plugin branch's engine. Upgrade notes are in
   exit 2 means bad usage and 1 means the command failed. `status`, `export`,
   `abandon`, `setup` and `viz` used to print plain text.
 - `get`/`similar` with an unknown ID is now an error instead of an empty result.
+- Query results are a brief view by default: internal, redundant and default-valued
+  keys and false flags are left out (`anon_allowed`, `complete` and
+  `credential_present` always show). Output is compact JSON. Responses are 36–47%
+  smaller on the synthetic corpus (an `endpoint` report goes from 18.5 KB to 9.9 KB).
+- `next` offers at most three distinct follow-ups (`endpoint`, `graph`, `get`) instead
+  of one `get` per result. Search attaches 3 neighbours per result at normal depth
+  (`--depth-*-neighbors`), and endpoint reports show 3 variants plus `variants_total`.
+- The agent prompt is 44% shorter (865 words). The node-type guide moved into the
+  jeb-query skill, and the hunting priorities and workflow are merged.
 - SKILL.md files are shorter, with detail moved into each skill's `references/`.
 
 ### Removed

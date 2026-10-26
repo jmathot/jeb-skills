@@ -53,6 +53,13 @@ class DocsTests(unittest.TestCase):
         for path in HISTORY:
             self.assertTrue(path.is_file(), path)
 
+    def test_word_budgets(self):
+        # The agent prompt is always loaded; SKILL.md loads on every skill use.
+        for name, budget in (('agent/J.E.B.E.D.I.A.H..md', 900), ('jeb-query/SKILL.md', 800),
+                             ('jeb-import/SKILL.md', 550)):
+            words = len((ROOT / name).read_text().split())
+            self.assertLessEqual(words, budget, f'{name} has {words} words')
+
     def test_documented_commands_exist(self):
         # `jeb <word>` in the skill docs must be a command of that skill's launcher.
         for skill, commands in (('jeb-import', IMPORT_COMMANDS), ('jeb-query', QUERY_COMMANDS)):

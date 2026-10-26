@@ -43,7 +43,7 @@ disabled. A gateway alias alone does not identify immutable weights.
 - Runtime budgets: `--embed-batch-docs N`, `--embed-batch-chars N`, `--embed-workers N`,
   `--candidate-ceiling N`, `--max-distance-graph VALUE`, `--max-distance-attacks VALUE`
   (`[0, 2]` or `none`), and
-  `--depth-<quick|normal|deep>-<candidate-k|n-results|max-per-endpoint|snippet-len|raw-chars> N`.
+  `--depth-<quick|normal|deep>-<candidate-k|n-results|max-per-endpoint|snippet-len|raw-chars|neighbors> N`.
   These never invalidate vectors. Only overridden budgets are saved, so new defaults
   still reach existing projects.
 

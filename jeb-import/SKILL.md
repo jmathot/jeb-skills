@@ -24,11 +24,11 @@ calls a model.
 | Need | Command |
 |---|---|
 | Import a capture | `jeb import capture.xml --project-dir DIR` |
-| Re-derive indexes (no XML needed) | `jeb rebuild --project-dir DIR` |
 | Inspect parse/index state and the loss ledger | `jeb status --project-dir DIR` |
-| Exclude a failed/interrupted capture | `jeb abandon <capture_id> --project-dir DIR`, then `rebuild` |
-| Export a collection as NDJSON | `jeb export --project-dir DIR --collection graph --output FILE` |
+| Re-derive indexes (no XML needed) | `jeb rebuild --project-dir DIR` |
 | Site map / vector-space HTML | `jeb viz --project-dir DIR --mode graph --out FILE` (or `--mode embedding`) |
+| Export a collection as NDJSON | `jeb export --project-dir DIR --collection graph --output FILE` |
+| Exclude a failed/interrupted capture | `jeb abandon <capture_id> --project-dir DIR`, then `rebuild` |
 
 Imports are cumulative: each new capture adds to the project, and every exchange
 is retained with its capture provenance (duplicates are merged only in the
@@ -36,7 +36,10 @@ derived indexes). Analysis flags (on `import`/`rebuild`) persist for the project
 - `--auth-cookies NAME[,NAME...]` sets the custom session cookie names; `''` clears them.
 - `--no-auto-detect-auth-cookies` turns off login-cookie inference.
 
-Every command prints JSON; `import` and `rebuild` print progress lines first. Errors
+Every command prints JSON; `import` and `rebuild` print progress lines instead. A
+finished import ends with `Indexed N distinct observations ...` and a `Loss ledger`
+line (a `rebuild` with nothing to do prints `Project indexes are current.`); anything
+else means it stopped early, so run `status`. Errors
 are one JSON object `{"command", "error"}` (usage errors add `help`), with exit 2
 for bad usage and 1 for a failed command. `jeb <command> -h` lists all options.
 

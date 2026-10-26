@@ -1,31 +1,55 @@
 ---
 name: jeb-query
-description: Investigate an imported Burp capture. Look up endpoints, map the app, inspect HTTP/auth/CORS behavior, traverse the knowledge graph, correlate identifiers, and record or recall findings from a project-local Chroma database. Use jeb-import first for new Burp XML.
+description: Investigate a Burp Suite capture imported with jeb-import, for web pentesting. Look up an endpoint, map the site, check auth/CORS/cookie posture, traverse the knowledge graph, correlate identifiers, and record or recall findings.
 ---
 
 # JEB — query
 
 Every command goes through this skill's launcher: `<skill-dir>/jeb`, which is
 `~/.config/opencode/skills/jeb-query/jeb` in a default install. **Below, `jeb` means
-that full path**; there is no `jeb` on PATH.
+that full path**; there is no `jeb` on PATH. Always pass `--project-dir DIR` (the
+engagement directory), or `--db-path DB`, not both.
+
+## Typical session
 
 ```bash
-~/.config/opencode/skills/jeb-query/jeb endpoint https://app.example/api/orders/42 --project-dir DIR
+jeb endpoint https://app.example/api/orders/42 --project-dir DIR   # a named route: start here
+jeb map --node-type route --project-dir DIR                        # no target yet: list routes
+jeb graph <id> --project-dir DIR                                   # what it connects to
+jeb get <id> --project-dir DIR                                     # the full record or exchange
+jeb record-attack --project-dir DIR ...                            # after every test
 ```
 
-- Always pass `--project-dir DIR` (the engagement directory), or `--db-path DB`, not both.
-- Embedding settings and credentials come from the project and OpenCode; nothing else
-  needs configuring.
-- Every command prints one JSON object with `command`, `count`, `results` and `next`.
-  Errors are JSON with `error` (usage errors add `help`), exit 2 for bad usage and 1
-  for a failed query. A failed query is not evidence of absence.
+## Output
+
+- One JSON object per command, with `command`, `count`, `results` and `next`.
+- `next` holds up to three ready-to-run commands with real ids and your project
+  selection. Prefer them over composing a new query; fill any `<placeholder>` first.
+- Results are a **brief view**: internal and default-valued keys are left out, and
+  so are false flags (a missing flag means false). `--full` shows every stored field,
+  `get` always does, and `--pretty` indents the JSON.
+- Errors are JSON with `error` (usage errors add `help`). Exit 2 means bad usage, 1
+  means the query failed. A failed query is not evidence of absence.
+
+## What the graph holds
+
+| `--node-type` | What it is |
+|---|---|
+| `route` | One per host + method + path template: protocol facts only, nothing from a body |
+| `behavior` | A route's response layer: the same facts plus the distilled body (JSON fields; HTML title, headings, forms, visible text) |
+| `origin` | A host's session/auth model: mechanisms, cookies set vs. consumed |
+| `data_object` | A schema seen at two or more routes, linking readers and writers |
+| `posture` | Missing headers / CORS shared by several routes |
+| `section` / `form` | Page sections and explicit input surfaces |
+
+To find a page by its content, search `--node-type behavior` (or `section`/`form`).
 
 ## Commands
 
 | Need | Command | Useful flags |
 |---|---|---|
 | Everything about one route | `jeb endpoint <path-or-url>` | `--host`, `--method`, `--no-raw`, `--raw-chars N` |
-| Site structure | `map --node-type route` (or `origin`, `data_object`) | `--kind page\|action\|endpoint`, `--host`, `--limit`, `--offset` |
+| Site structure | `map --node-type route` (or `origin`, `data_object`) | `--kind page\|action\|endpoint`, `--limit`, `--offset` |
 | Semantic search | `search "password reset form" --node-type behavior` | `--loose`, `--depth quick\|normal\|deep` |
 | Filter observed records | `search --status '>=500' --param q` | filters below |
 | Literal text | `search --contains "access-control-allow-origin: *"` | `--in exchanges` for full source |
@@ -35,38 +59,28 @@ that full path**; there is no `jeb` on PATH.
 | Graph neighbours | `graph <id>` | `--rel HAS_BEHAVIOR`, `--direction in\|out\|both`, `--hops 1\|2` |
 | Where a value appears | `identifier <value>` | `--limit`, `--offset` |
 | Recorded findings | `attacks` | `--vuln-class`, `--verdict`, `--path` |
-| Record a finding | `record-attack --vuln-class SQLi --endpoint <abs-url> ...` | see below |
+| Index and capture state | `status` | |
 
-Filters for `map`/`search`/`attacks`:
-- facets: `--host`, `--path`, `--method`, `--status`, `--param`, `--cookie`,
-  `--missing-header`, `--kind`, `--access-control`, `--access-class`;
-- booleans: `--anon`, `--auth`, `--anon-matches-auth`, `--cors-open`, `--cookie-issues`,
-  `--jwt`, `--include-static`.
-
-Invalid values are rejected with the valid list. Read `references/retrieval.md` for
-filter values, depth budgets, cutoffs and source-exchange search.
-
-## Follow `next`
-
-`next` holds ready-to-run shell commands with real ids filled in, using the same
-project selection you passed. Prefer them over composing a new query. Fill any
-`<placeholder>` first.
+Filters for `map`/`search`/`attacks`: facets `--host`, `--path`, `--method`,
+`--status`, `--param`, `--cookie`, `--missing-header`, `--kind`, `--access-control`,
+`--access-class`; booleans `--anon`, `--auth`, `--anon-matches-auth`, `--cors-open`,
+`--cookie-issues`, `--jwt`, `--include-static`. Invalid values are rejected with the
+valid list. Read `references/retrieval.md` for filter values, depth budgets, cutoffs
+and source-exchange search.
 
 ## Interpret carefully
 
 - The database records what was observed, not what exists. Client-named routes with
   `observed=false` are leads.
-- Route nodes carry protocol facts, not page content. To find a form, heading or
-  visible text, search `--node-type behavior` (or `section`/`form`).
-- Searching graph text for vulnerability names (`sqli`, `xss`, ...) removes those
-  terms (`rejected_terms`). Search the structural signal instead. Vulnerability
-  classes live only in `attacks`.
+- Searching for vulnerability names (`sqli`, `xss`, ...) strips those terms
+  (`rejected_terms`). Search the structural signal; vulnerability classes live only
+  in `attacks`.
 - Credential presence is not successful authentication. `--anon` means no recognized
   credential, and public data alone is not a vulnerability.
-- `anon_matches_auth` means identical response bodies with and without credentials.
-  It does not prove the credentials were accepted. Schema matches are weaker.
+- `anon_matches_auth` means identical response bodies with and without credentials;
+  it does not prove the credentials were accepted. Schema matches are weaker.
 - CORS `matches-origin` is one equality observation, not proven reflection.
-- Equal identifier values, and entity links, are leads, not proof of the same record.
+- Equal identifier values and entity links are leads, not proof of the same record.
   Identifier extraction is sampled, so a miss is not proof of absence.
 - An empty search is not absence: read `fallback`, retry with `--loose`, and check
   `notes`, `index_state` and `incomplete_captures`.
@@ -80,8 +94,7 @@ jeb record-attack --project-dir DIR --vuln-class SQLi --endpoint https://app.exa
   --request-file req.txt --response-file resp.txt --event-id <retry-key>
 ```
 
-- Record every test, including `not_vulnerable` ones. Verdicts are `vulnerable`,
-  `not_vulnerable` and `inconclusive`.
-- `--event-id` makes retries idempotent.
-- If a profile mismatch or rebuild note appears, run the jeb-import `rebuild` command
-  it gives. Never delete the database.
+Record every test, including `not_vulnerable` ones (verdicts: `vulnerable`,
+`not_vulnerable`, `inconclusive`). `--event-id` makes retries idempotent. If a
+profile-mismatch or rebuild note appears, run the jeb-import `rebuild` command it
+gives. Never delete the database.
