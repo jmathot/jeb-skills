@@ -14,7 +14,7 @@ REMOVED = ('process_burp.sh', 'jeb-query.sh', 'setup.sh', 'visualize.sh')
 HISTORY = {ROOT / 'docs/migration.md', ROOT / 'CHANGELOG.md'}
 IMPORT_COMMANDS = {*runtime.IMPORT_COMMANDS, 'setup', 'viz'}
 QUERY_COMMANDS = {'endpoint', 'map', 'search', 'get', 'similar', 'identifier', 'evidence',
-                  'graph', 'attacks', 'record-attack'}
+                  'graph', 'attacks', 'record-attack', 'status'}
 
 
 def documents():

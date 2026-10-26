@@ -29,6 +29,7 @@ from findings import finding_document, parse_finding, pairs_for_finding
 from streaming import IDENTIFIER_VERSION
 import retrieval
 import hints
+import views
 
 # Preserve the structural-query guidance without adding another retrieval engine.
 VULN_ALIASES = ('sql injection', 'sql-injection', 'sqli', 'nosql injection',
@@ -52,7 +53,7 @@ def screen_query(text, collection):
 COLLECTIONS = ('graph', 'attacks')
 ADDRESSABLE = COLLECTIONS + ('exchanges',)
 COMMANDS = ('endpoint', 'map', 'search', 'get', 'similar', 'identifier', 'evidence', 'graph',
-            'attacks', 'record-attack')
+            'attacks', 'record-attack', 'status')
 # Stored facet values; argparse lists them on a typo instead of silently matching nothing.
 KINDS = ('page', 'action', 'endpoint', 'origin', 'auth_model', 'entity', 'posture', 'section', 'form')
 ACCESS_CONTROL = ('open-data', 'soft-auth-wall', 'enforced', 'unknown')
@@ -170,7 +171,7 @@ class JebAgent:
             evidence = meta['evidence_ids'].split(',')
             out['evidence_ids'] = evidence[:5]
             out['evidence_count'] = len(evidence)
-        return out
+        return views.brief(out)
 
     @staticmethod
     def _and_where(where, extra):
@@ -470,6 +471,16 @@ def graph_view(agent, target, rel=None, direction='both', depth=1, limit=50):
 
 def execute(args):
     command = args.command
+    if command == 'status':
+        # Read-only, so an investigation never has to switch skills to check the index.
+        if not is_project(args.db_path):
+            raise MissingCollection('Project database does not exist; import a capture first.')
+        from import_project import project_status
+        client = chromadb.PersistentClient(path=os.path.abspath(args.db_path))
+        if 'captures' not in {c.name for c in client.list_collections()}:
+            raise MissingCollection('Project has no captures; import a capture first.')
+        found = project_status(client, client.get_collection('captures', embedding_function=None))
+        return envelope(command, results=found.pop('captures'), **found)
     settings = dict(DEPTH[getattr(args, 'depth', 'normal')])
     if getattr(args, 'limit', None) is not None:
         if args.limit < 1:
@@ -517,7 +528,7 @@ def execute(args):
             field = 'anon_matches_auth' if args.signal == 'content' else 'anon_schema_matches_credentialed'
             where = {'$and': [where, {field: True}]}
         found = agent.source_evidence(where=where, offset=args.offset, limit=args.limit)
-        return envelope(command, **found, next=[hints.query('get', target=r['id']) for r in found['results'][:3]])
+        return envelope(command, **found, next=follow(found['results']))
     if command == 'record-attack':
         def read_text(value, path):
             if path:
@@ -564,7 +575,23 @@ def execute(args):
                              offset=getattr(args, 'offset', 0),
                              where_document={'$contains': args.contains} if getattr(args, 'contains', None) else None)
     return envelope(command, collection=collection, **found,
-                    next=[hints.query('get', target=r['id']) for r in found['results'][:3]])
+                    next=follow(found['results']))
+
+
+def follow(results):
+    """At most three follow-ups for the top results, each a different action."""
+    if not results:
+        return []
+    top, steps = results[0], []
+    routed = next((r for r in results if r.get('node_type') in ('route', 'behavior')
+                   and r.get('endpoint_template')), None)
+    if routed:
+        steps.append(hints.query('endpoint', target=routed['endpoint_template'],
+                                 host=routed.get('host'), method=routed.get('method')))
+    if top.get('node_type'):
+        steps.append(hints.query('graph', target=top['id']))
+    steps.append(hints.query('get', target=top['id']))
+    return steps
 
 
 def build_parser():
@@ -573,6 +600,8 @@ def build_parser():
     for command in COMMANDS:
         p = sub.add_parser(command, allow_abbrev=False)
         runtime.add_server_args(p)
+        p.add_argument('--full', action='store_true', help='every stored metadata field, not the brief view')
+        p.add_argument('--pretty', action='store_true', help='indented JSON for reading by hand')
         location = p.add_mutually_exclusive_group()
         location.add_argument('--db-path')
         location.add_argument('--project-dir', help='Use <project_dir>/chroma_db')
@@ -633,6 +662,7 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args(runtime.hoist(sys.argv[1:], COMMANDS))
+    views.FULL = args.full or args.command == 'get'
     hints.set_location(args.project_dir, args.db_path)
     args.db_path = os.path.join(args.project_dir, 'chroma_db') if args.project_dir else (args.db_path or './chroma_db')
     if hasattr(args, 'opencode_server'):
@@ -665,7 +695,9 @@ def main():
                 if pending:
                     result.setdefault('notes', []).append('Import incomplete; derived results may be partial. Resume the import.')
                     result['incomplete_captures'] = pending
-        print(json.dumps(result, indent=2))
+        result = views.prune(result, keep=('command', 'count', 'results', 'next'))
+        print(json.dumps(result, indent=2 if args.pretty else None,
+                         separators=None if args.pretty else (',', ':'), ensure_ascii=False))
         return 0
     except Exception as exc:
         print(json.dumps(envelope(args.command, results=[], error=str(exc))))

@@ -333,6 +333,12 @@ def decoded(metadata):
     return result
 
 
+def project_status(client, captures):
+    """Project index state, collection counts and per-capture parse state."""
+    return {'project': decoded(captures.metadata or {}), 'collections': collection_counts(client),
+            'captures': list(scan(captures))}
+
+
 def main():
     args = runtime.parse_import(sys.argv[1:])
     db_path = str(Path(args.project_dir).resolve() / 'chroma_db')
@@ -347,9 +353,8 @@ def main():
         client = chromadb.PersistentClient(path=db_path)
         captures = lookup_collection(client, 'captures')
         if args.command == 'status':
-            print(json.dumps({'command': 'status', 'project': decoded(captures.metadata or {}),
-                              'collections': collection_counts(client),
-                              'captures': list(scan(captures))}, indent=2))
+            print(json.dumps({'command': 'status', **project_status(client, captures)},
+                             separators=(',', ':'), ensure_ascii=False))
             return
         if args.command == 'export':
             if args.collection not in {c.name for c in client.list_collections()}:

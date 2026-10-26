@@ -18,6 +18,13 @@ from storage import LOOKUP_COLLECTIONS
 HERE = Path(__file__).resolve().parent
 EXPORT_COLLECTIONS = ('graph', 'attacks') + LOOKUP_COLLECTIONS
 IMPORT_COMMANDS = ('import', 'rebuild', 'status', 'abandon', 'export')
+IMPORT_HELP = {'import': 'add a Burp XML capture to the project',
+               'rebuild': 're-derive indexes from retained observations (no XML needed)',
+               'status': 'capture parse state, project index state and loss ledger',
+               'abandon': 'exclude a failed or interrupted capture, then rebuild',
+               'export': 'write one collection as NDJSON'}
+LAUNCHER_COMMANDS = {'setup': 'prepare the Python environment (--viz adds plotting)',
+                     'viz': 'write an HTML site map or vector-space plot'}
 # Commands that never embed: a stale saved selection must not block them.
 READ_ONLY_COMMANDS = ('status', 'export', 'abandon')
 # Accepted before or after the subcommand; (flag, takes a value).
@@ -32,9 +39,9 @@ TEST_MODE = None  # Test harnesses set this in memory; not a production setting.
 CONNECTION_LOCK = threading.Lock()
 CONFIG_KEY = 'embedding_config'
 DEPTH_DEFAULTS = {
-    'quick': dict(candidate_k=20, n_results=5, max_per_endpoint=1, snippet_len=120, raw_chars=0),
-    'normal': dict(candidate_k=40, n_results=8, max_per_endpoint=1, snippet_len=200, raw_chars=2000),
-    'deep': dict(candidate_k=120, n_results=25, max_per_endpoint=2, snippet_len=400, raw_chars=8000),
+    'quick': dict(candidate_k=20, n_results=5, max_per_endpoint=1, snippet_len=120, raw_chars=0, neighbors=0),
+    'normal': dict(candidate_k=40, n_results=8, max_per_endpoint=1, snippet_len=200, raw_chars=2000, neighbors=3),
+    'deep': dict(candidate_k=120, n_results=25, max_per_endpoint=2, snippet_len=400, raw_chars=8000, neighbors=6),
 }
 DEFAULTS = {'timeout': 120, 'send_dimensions': True, 'revision': '', 'base_url': None,
             'provider': None, 'opencode_server': None, 'keep_alive': '30m',
@@ -148,13 +155,11 @@ def add_server_args(parser):
 
 def import_parser():
     parser = JsonArgumentParser(prog='jeb', description='Import and maintain cumulative Burp XML captures in Chroma.',
-                                epilog='Also: "jeb setup [--viz]" prepares the Python environment, and '
-                                       '"jeb viz --project-dir DIR [--mode embedding|graph]" writes an HTML '
-                                       'visualization. Run "jeb <command> -h" for its options.',
+                                epilog='Run "jeb <command> -h" for its options.',
                                 allow_abbrev=False)
     subs = parser.add_subparsers(dest='command', required=True)
     for command in IMPORT_COMMANDS:
-        p = subs.add_parser(command, allow_abbrev=False)
+        p = subs.add_parser(command, allow_abbrev=False, help=IMPORT_HELP[command])
         if command == 'import':
             p.add_argument('xml_file')
         if command == 'abandon':
@@ -175,6 +180,9 @@ def import_parser():
         if command == 'export':
             p.add_argument('--collection', choices=EXPORT_COLLECTIONS, required=True)
             p.add_argument('--output', required=True)
+    # Handled by the launcher itself; listed so help and typos show every command.
+    for command, text in LAUNCHER_COMMANDS.items():
+        subs.add_parser(command, help=text, add_help=False)
     return parser
 
 
@@ -182,6 +190,8 @@ def parse_import(argv):
     """Parse import arguments, resolving the positional/option project directory."""
     parser = import_parser()
     args = parser.parse_args(import_argv(argv))
+    if args.command in LAUNCHER_COMMANDS:
+        parser.error(f'Run "{args.command}" through the jeb launcher: <jeb-import skill dir>/jeb {args.command}')
     if args.project_dir and args.project_dir_option and \
             Path(args.project_dir).resolve() != Path(args.project_dir_option).resolve():
         parser.error('Give the project directory once: positional or --project-dir.')
@@ -272,7 +282,7 @@ def validate(selection):
             raise ValueError('Invalid depth fields.')
         fields = {**defaults, **overrides}
         for field, value in fields.items():
-            minimum = 0 if field in ('snippet_len', 'raw_chars') else 1
+            minimum = 0 if field in ('snippet_len', 'raw_chars', 'neighbors') else 1
             if type(value) is not int or value < minimum:
                 raise ValueError('Depth ' + field + ' must be an integer >= ' + str(minimum) + '.')
         result['depth'][name] = fields

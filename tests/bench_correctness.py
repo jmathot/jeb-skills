@@ -239,6 +239,25 @@ def check_hint_contract(report):
     report.check('hints/at least one hint per run', seen > 0, f'seen={seen}')
 
 
+def check_brief_view(report):
+    """The default view never contradicts `--full`, and stays compact. Budgets
+    cover only metadata commands, whose output does not depend on the model."""
+    import views
+    argv = ['map', '--node-type', 'route', '--limit', '20']
+    brief, full = fixture.query(argv, full=False)['results'], fixture.query(argv)['results']
+    full = {r['id']: r for r in full}
+    report.check('brief/drops internal keys', not any(k in r for r in brief for k in views.DROP))
+    report.check('brief/keeps anon_allowed', all('anon_allowed' in r for r in brief))
+    report.check('brief/every value matches --full',
+                 all(full[r['id']].get(k) == v for r in brief for k, v in r.items()))
+    for argv, budget in ((['map', '--node-type', 'route', '--limit', '5'], 3600),
+                         (['endpoint', '/api/orders/1040'], 10000)):
+        payload = fixture.query(argv, full=False)
+        payload.pop('next', None)  # Hint length depends on the project path.
+        size = len(json.dumps(payload, separators=(',', ':'), ensure_ascii=False))
+        report.check(f'brief/{argv[0]} within {budget} bytes', size <= budget, f'size={size}')
+
+
 def check_error_paths(report):
     cases = [
         (['search', '--in', 'exchanges', 'free text'], 'exact filters'),
@@ -461,6 +480,7 @@ def main():
     check_evidence_roundtrip(report)
     check_hint_contract(report)
     check_error_paths(report)
+    check_brief_view(report)
     check_graph(report, manifest)
     check_findings(report)
     check_stored_document_invariant(report, manifest)

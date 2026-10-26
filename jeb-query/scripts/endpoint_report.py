@@ -26,9 +26,9 @@ PLACEHOLDER_RE = re.compile(r'^\{[^}]*\}$')
 
 # How much of each section survives at each depth.
 BUDGET = {
-    'quick':  dict(matches=4,  sub_paths=5,  siblings=0,  examples=0,  page_content=False),
-    'normal': dict(matches=6,  sub_paths=10, siblings=8,  examples=5,  page_content=False),
-    'deep':   dict(matches=12, sub_paths=25, siblings=20, examples=12, page_content=True),
+    'quick':  dict(matches=4,  sub_paths=5,  siblings=0,  examples=0,  variants=0,  page_content=False),
+    'normal': dict(matches=6,  sub_paths=10, siblings=8,  examples=5,  variants=3,  page_content=False),
+    'deep':   dict(matches=12, sub_paths=25, siblings=20, examples=12, variants=48, page_content=True),
 }
 MAX_HEADER_LINES = 40
 REQUEST_BODY_CAP = 1500
@@ -344,11 +344,13 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
                 for i in example_ids if i in metas][:budget['examples']]
             observed = agent.neighbors([e['id'] for e in report['examples']],
                                        rel='OBSERVED_IN', direction='out')
-            if observed:
+            if observed and budget['variants']:
                 report['variants'] = [
                     {'behavior_id': e['src'], 'exchange_id': e['dst'], 'instances': int(e['weight']),
                      'variant_key': e['variant_key']}
-                    for e in observed][:budget['examples'] * 4]
+                    for e in observed][:budget['variants']]
+                if len(observed) > budget['variants']:
+                    report['variants_total'] = len(observed)
             if raw_budget:
                 report['raw_example'] = _raw_example(agent, metas, raw_budget)
         elif example_ids:
@@ -469,13 +471,13 @@ def _next_steps(report, target):
         steps.append(hints.query('get', target=raw.get('exchange_id') or raw['id']))
     elif report.get('examples'):
         steps.append(hints.query('get', target=report['examples'][0]['id']))
-    if report.get('related_by_entity'):
-        steps.append(hints.query('identifier', target='<id value>'))
     if report.get('matches'):
         steps.append(hints.query('graph', target=report['matches'][0]['id']))
+    if report.get('related_by_entity'):
+        steps.append(hints.query('identifier', target='<id value>'))
     steps.append(hints.query('search', node_type='behavior', path=target['path']))
     steps.append(hints.query('attacks', path=target['path']))
-    return steps
+    return steps[:3]
 
 
 def _empty_report(agent, target, host, notes):

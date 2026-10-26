@@ -13,13 +13,13 @@ DEFAULT_MAX_DISTANCE = {
     'attacks': runtime.get('max_distance_attacks', 0.38 if PRESET == 'ollama-embeddinggemma2' else None),
 }
 
-# Neighbours summarised per result.
+# Neighbours summarised per result unless the depth budget says otherwise.
 MAX_NEIGHBORS = 6
 
 
 def search(agent, query, n_results=8, where=None, where_document=None,
            snippet_len=200, candidate_k=40, max_distance='default',
-           max_per_endpoint=2, post=None):
+           max_per_endpoint=2, post=None, neighbors=MAX_NEIGHBORS):
     limit = max(1, min(int(n_results), 100))
     candidate_k = max(limit, min(int(candidate_k), 500))
     if max_distance == 'default':
@@ -81,7 +81,7 @@ def search(agent, query, n_results=8, where=None, where_document=None,
         counts[key] = counts.get(key, 0) + 1
         if len(selected) < limit:
             selected.append(result)
-    _attach_neighbors(agent, selected)
+    _attach_neighbors(agent, selected, neighbors)
     diagnostics['candidate_limit_reached'] = diagnostics['candidates'] >= candidate_k
     diagnostics['candidate_budget'] = candidate_k
     return {'results': selected, 'fallback': fallback if not selected else [],
@@ -112,19 +112,19 @@ def _fold_symmetric(rows):
     return folded
 
 
-def _attach_neighbors(agent, results):
+def _attach_neighbors(agent, results, limit=MAX_NEIGHBORS):
     """A bounded one-hop summary per result: one edges read, one graph read."""
-    if agent.collection_name != 'graph' or not results:
+    if agent.collection_name != 'graph' or not results or limit <= 0:
         return
     ids = [r['id'] for r in results]
-    edges = agent.neighbors(ids, direction='both', limit=len(ids) * MAX_NEIGHBORS * 4)
+    edges = agent.neighbors(ids, direction='both', limit=len(ids) * limit * 4)
     by_node = {}
     for m in edges:
         for node, other, direction in ((m['src'], m['dst'], 'out'), (m['dst'], m['src'], 'in')):
             if node in ids:
                 by_node.setdefault(node, []).append((m['rel'], direction, other))
     labels = agent.get_many([other for rows in by_node.values()
-                             for _, _, other in rows[:MAX_NEIGHBORS]])
+                             for _, _, other in rows[:limit]])
     for result in results:
         rows = _fold_symmetric(by_node.get(result['id'], []))
         if not rows:
@@ -133,6 +133,6 @@ def _attach_neighbors(agent, results):
             {'rel': rel, 'dir': direction, 'id': other,
              **{k: v for k, v in (labels.get(other, {}).get('metadata') or {}).items()
                 if k in ('node_type', 'method', 'endpoint_template') and v != ''}}
-            for rel, direction, other in rows[:MAX_NEIGHBORS]]
-        if len(rows) > MAX_NEIGHBORS:
+            for rel, direction, other in rows[:limit]]
+        if len(rows) > limit:
             result['neighbors_total'] = len(rows)

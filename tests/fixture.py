@@ -85,13 +85,14 @@ def run_import(project, fresh=False):
     return elapsed, proc.stdout
 
 
-def query(args, project=None, check=True):
-    """Run the query CLI and return its parsed JSON envelope."""
+def query(args, project=None, check=True, full=True):
+    """Run the query CLI and return its parsed JSON envelope. Ground truth is
+    checked against complete records, so `full` bypasses the brief view."""
     configure_live()
     project = project or project_dir()
     proc = subprocess.run(
         [interpreter(), *CLI_PREFIX, os.path.join(QUERY, 'agent_interface.py')]
-        + list(args) + ['--db-path', os.path.join(project, 'chroma_db')],
+        + list(args) + ['--db-path', os.path.join(project, 'chroma_db')] + (['--full'] if full else []),
         cwd=CONFIG_CWD, capture_output=True, text=True)
     try:
         payload = json.loads(proc.stdout)

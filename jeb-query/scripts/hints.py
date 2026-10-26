@@ -52,7 +52,9 @@ def query(command, **args):
         else:
             parts += [flag, str(value)]
     if positional and args.get(positional) not in (None, ''):
-        parts += ['--', str(args[positional])]
+        value = str(args[positional])
+        # `--` only where the value could be read as an option.
+        parts += ['--', value] if value.startswith('-') else [value]
     return launcher(QUERY) + ' ' + shlex.join(parts)
 
 

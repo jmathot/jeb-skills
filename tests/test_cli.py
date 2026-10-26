@@ -185,6 +185,13 @@ Content-Type: application/json\r
         self.assertEqual(after['embedding_config'], before['embedding_config'])
         self.assertEqual(after['index_state'], 'complete')
         self.assertTrue(self.query('--project-dir', project, 'map', '--node-type', 'route')['count'])
+        # Index state is readable from the query skill, without switching skills.
+        status = self.query('status', '--project-dir', project)
+        self.assertEqual(status['project']['index_state'], 'complete')
+        self.assertEqual(status['count'], len(status['results']))
+        compact = self.run_cli(self.querier, 'map', '--project-dir', project).stdout
+        self.assertNotIn('\n  ', compact)
+        self.assertIn('\n  ', self.run_cli(self.querier, 'map', '--project-dir', project, '--pretty').stdout)
         bad = self.run_cli(self.querier, 'map', '--kind', 'nonsense', '--project-dir', project, check=False)
         self.assertEqual(bad.returncode, 2)
         error = json.loads(bad.stdout)
@@ -234,7 +241,7 @@ Content-Type: application/json\r
         # Leading global flags never turn the command word into a capture path.
         self.assertIn('usage: jeb viz', self.run_cli(self.importer, '--project-dir', empty, 'viz', '-h').stdout)
         self.assertIn('record-attack', self.run_cli(self.querier, '--project-dir', empty, '-h').stdout)
-        self.assertIn('jeb setup', self.run_cli(self.importer, '-h').stdout)
+        self.assertIn('setup               prepare the Python environment', self.run_cli(self.importer, '-h').stdout)
         self.assertFalse(empty.exists())
 
     def test_upgrade_from_original_skills_main_preserves_sources_and_findings(self):
