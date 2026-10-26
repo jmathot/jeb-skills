@@ -1,20 +1,37 @@
-"""Executable, quoted follow-up commands retaining the selected database."""
+"""Executable, quoted follow-up commands that keep the caller's project selection."""
 from pathlib import Path
 import shlex
 
-DATABASE = None
+LOCATION = []
 SERVER_ARGS = []
+DATABASE = None
 HERE = Path(__file__).resolve().parent
-QUERY = HERE / 'jeb-query.sh'
-IMPORT = HERE.parents[1] / 'jeb-import/scripts/process_burp.sh'
+QUERY = HERE.parent / 'jeb'
+IMPORT = HERE.parents[1] / 'jeb-import/jeb'
 POSITIONALS = {'endpoint': 'target', 'get': 'target', 'similar': 'target',
                'identifier': 'target', 'evidence': 'target', 'graph': 'target', 'search': 'text'}
 
 
-def set_database(path):
-    global DATABASE, SERVER_ARGS
-    DATABASE = str(Path(path).resolve())
+def launcher(path):
+    """The launcher path, written as ~/... under the home directory."""
+    try:
+        return '~/' + shlex.quote(str(path.relative_to(Path.home())))
+    except (ValueError, RuntimeError):
+        return shlex.quote(str(path))
+
+
+def set_location(project_dir=None, db_path=None):
+    """Echo the selection the caller gave; omitted means ./chroma_db in the cwd."""
+    global LOCATION, DATABASE, SERVER_ARGS
     SERVER_ARGS = []
+    if project_dir:
+        LOCATION = ['--project-dir', str(Path(project_dir).resolve())]
+        DATABASE = Path(project_dir).resolve() / 'chroma_db'
+    elif db_path:
+        LOCATION = ['--db-path', str(Path(db_path).resolve())]
+        DATABASE = Path(db_path).resolve()
+    else:
+        LOCATION, DATABASE = [], None
 
 
 def set_server(server):
@@ -23,10 +40,7 @@ def set_server(server):
 
 
 def query(command, **args):
-    parts = ['bash', str(QUERY), command]
-    parts += SERVER_ARGS
-    if DATABASE:
-        parts += ['--db-path', DATABASE]
+    parts = [command, *LOCATION, *SERVER_ARGS]
     positional = POSITIONALS.get(command)
     for key, value in args.items():
         if key == positional or value is None or value == '':
@@ -39,18 +53,33 @@ def query(command, **args):
             parts += [flag, str(value)]
     if positional and args.get(positional) not in (None, ''):
         parts += ['--', str(args[positional])]
-    return shlex.join(parts)
+    return launcher(QUERY) + ' ' + shlex.join(parts)
 
 
 def importer(command, **args):
-    parts = ['bash', str(IMPORT), command]
+    # An explicit database may have a nonstandard basename. Its parent alone
+    # would select another store; never emit a misleading rebuild command.
+    if DATABASE is not None and DATABASE.name != 'chroma_db':
+        return ''
+    parts = [command]
+    if DATABASE is not None:
+        parts += ['--project-dir', str(DATABASE.parent)]
     parts += SERVER_ARGS
     for key, value in args.items():
         if value is not None and value != '':
             parts += ['--' + key.replace('_', '-'), str(value)]
-    # An explicit database may have a nonstandard basename. Its parent alone
-    # would select another store; never emit a misleading rebuild command.
-    if DATABASE and Path(DATABASE).name != 'chroma_db':
-        return ''
-    parts += ['--', str(Path(DATABASE).parent) if DATABASE else '.']
-    return shlex.join(parts)
+    return launcher(IMPORT) + ' ' + shlex.join(parts)
+
+
+def rebuild_note(reason):
+    """A rebuild instruction carrying a runnable command when one can be built."""
+    command = importer('rebuild')
+    return reason + (' Run: ' + command if command else ' Rebuild the project with jeb-import.') + \
+        ' Retain all original captures and the database.'
+
+
+def import_note(reason):
+    """An import instruction for a project with no finished capture."""
+    command = importer('import')
+    return reason + ' No capture has finished importing. ' + \
+        ('Run: ' + command + ' CAPTURE.xml' if command else 'Import a capture with jeb-import.')

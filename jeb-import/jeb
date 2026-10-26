@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# JEB launcher: jeb <setup|import|rebuild|status|abandon|export|viz> [args]
+# Self-contained in the skill directory; no PATH or environment changes needed.
+# `jeb query ...` is the internal entry point used by the jeb-query launcher.
+set -euo pipefail
+SKILL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS="$SKILL/scripts"
+VENV="$SCRIPTS/venv"
+
+fail() {
+    python3 -c 'import json, sys; print(json.dumps({"command": sys.argv[1], "error": sys.argv[2]}))' "$1" "$2"
+    exit 1
+}
+
+# The command word, skipping global flags that may precede it.
+args=("$@")
+command=""
+index=0
+while [ "$index" -lt "${#args[@]}" ]; do
+    case "${args[$index]}" in
+        --project-dir|--db-path|--opencode-server) index=$((index + 2)) ;;
+        --project-dir=*|--db-path=*|--opencode-server=*|--no-opencode-server) index=$((index + 1)) ;;
+        *) command="${args[$index]}"; break ;;
+    esac
+done
+# Drop the launcher-level command word; the scripts below receive the rest.
+rest=("${args[@]}")
+case "$command" in
+    setup|viz|query) unset "rest[$index]"; rest=(${rest[@]+"${rest[@]}"}) ;;
+esac
+
+help=0
+for arg in "$@"; do
+    [ "$arg" = "--" ] && break
+    case "$arg" in -h|--help) help=1 ;; esac
+done
+
+case "$command" in
+    setup) exec python3 "$SCRIPTS/setup_environment.py" ${rest[@]+"${rest[@]}"} ;;
+    viz) stamp="$VENV/.jeb-viz-requirements"; extra=" --viz" ;;
+    query) stamp="$VENV/.jeb-requirements"; extra="" ;;
+    *)
+        # Import-side help needs no third-party packages.
+        if [ "$help" = 1 ] || [ -z "$command" ]; then
+            python="$VENV/bin/python"; [ -x "$python" ] || python=python3
+            exec "$python" "$SCRIPTS/import_project.py" "$@"
+        fi
+        stamp="$VENV/.jeb-requirements"; extra="" ;;
+esac
+if [ ! -x "$VENV/bin/python" ] || [ ! -f "$stamp" ]; then
+    fail "${command:-import}" "Environment not prepared; run: $SKILL/jeb setup$extra"
+fi
+case "$command" in
+    viz) exec "$VENV/bin/python" "$SCRIPTS/visualize.py" ${rest[@]+"${rest[@]}"} ;;
+    query) exec "$VENV/bin/python" "$SKILL/../jeb-query/scripts/agent_interface.py" ${rest[@]+"${rest[@]}"} ;;
+    *) exec "$VENV/bin/python" "$SCRIPTS/import_project.py" "$@" ;;
+esac

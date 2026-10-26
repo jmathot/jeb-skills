@@ -1,4 +1,11 @@
 """Stream derived documents into Chroma, retaining unchanged distilled vectors."""
+if __name__ == '__main__':
+    import sys
+    import runtime
+    if not runtime.ACTIVE:
+        # Standalone use embeds with the project's saved selection, never defaults.
+        sys.exit(runtime.run('store'))
+
 import argparse
 import json
 import runtime

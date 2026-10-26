@@ -70,8 +70,9 @@ class RuntimeTests(unittest.TestCase):
                             ('--depth-quick-n-results', '0')]:
             with self.assertRaises(ValueError):
                 self.selection(flag, value)
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
             self.selection('--max-distance-graph', 'nan')
+        self.assertIn('cosine distance', json.loads(out.getvalue())['error'])
 
     def test_no_production_skill_reads_environment_configuration(self):
         import ast
@@ -144,6 +145,19 @@ class RuntimeTests(unittest.TestCase):
             runtime.SELECTION = {**current, 'batch_docs': 4, 'timeout': 20}
             runtime.persist(captures)
             self.assertEqual(captures.metadata['index_state'], 'complete')
+
+    def test_current_index_stays_complete_when_saved_selection_is_stale(self):
+        import chromadb
+        with tempfile.TemporaryDirectory() as project:
+            client = chromadb.PersistentClient(path=project)
+            stale = {'preset': 'retired-preset'}
+            captures = client.create_collection('captures', embedding_function=None,
+                                               metadata={'embedding_config': json.dumps(stale), 'index_state': 'complete'})
+            runtime.ORIGINAL = stale
+            runtime.SELECTION = self.selection()
+            runtime.persist(captures, indexed=True)
+            self.assertEqual(captures.metadata['index_state'], 'complete')
+            self.assertNotEqual(json.loads(captures.metadata['embedding_config']), stale)
 
     def test_test_runner_requires_explicit_live_switch(self):
         import subprocess
@@ -223,28 +237,54 @@ class RuntimeTests(unittest.TestCase):
             client = chromadb.PersistentClient(path=str(Path(project) / 'chroma_db'))
             captures = client.create_collection('captures', embedding_function=None)
             runtime.persist(captures)
-            self.assertEqual(runtime.load_selection(Path(project) / 'chroma_db'), runtime.SELECTION)
+            saved = runtime.load_selection(Path(project) / 'chroma_db')
+            self.assertEqual(runtime.validate(saved), runtime.SELECTION)
+            # Vector identity is pinned; untouched runtime defaults are not frozen in.
+            for key in runtime.IDENTITY:
+                self.assertIn(key, saved)
+            self.assertNotIn('batch_docs', saved)
+            self.assertNotIn('depth', saved)
             with self.assertRaisesRegex(ValueError, 'concurrently'):
                 runtime.persist(captures)
 
     def test_hints_quote_paths_and_leading_dash_positionals(self):
         import agent_interface
-        hints.set_database('/tmp/opencode/project with spaces/chroma_db')
-        self.addCleanup(hints.set_database, './chroma_db')
+        self.addCleanup(hints.set_location)
+        hints.set_location()
+        self.assertEqual(shlex.split(hints.query('map'))[1:], ['map'])
+        hints.set_location(db_path='/tmp/project with spaces/chroma_db')
         hint = hints.query('get', target='-id with spaces')
         argv = shlex.split(hint)
-        self.assertTrue(Path(argv[1]).is_file())
-        args = agent_interface.build_parser().parse_args(argv[2:])
+        self.assertEqual(Path(os.path.expanduser(argv[0])).resolve(), (ROOT / 'jeb-query/jeb').resolve())
+        args = agent_interface.build_parser().parse_args(argv[1:])
         self.assertEqual(args.target, '-id with spaces')
-        self.assertEqual(args.db_path, '/tmp/opencode/project with spaces/chroma_db')
+        self.assertEqual(args.db_path, '/tmp/project with spaces/chroma_db')
         hints.set_server('http://127.0.0.1:4096')
         argv = shlex.split(hints.query('search', text='orders'))
-        self.assertEqual(agent_interface.build_parser().parse_args(argv[2:]).opencode_server, 'http://127.0.0.1:4096')
+        self.assertEqual(agent_interface.build_parser().parse_args(argv[1:]).opencode_server, 'http://127.0.0.1:4096')
         importer = shlex.split(hints.importer('rebuild'))
-        self.assertEqual(runtime.import_parser().parse_args(importer[2:]).project_dir,
-                         '/tmp/opencode/project with spaces')
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+        self.assertEqual(runtime.parse_import(importer[1:]).project_dir, '/tmp/project with spaces')
+        hints.set_location(db_path='/tmp/elsewhere/custom_db')
+        self.assertEqual(hints.importer('rebuild'), '')
+        self.assertIn('Rebuild the project', hints.rebuild_note('Stale.'))
+        hints.set_location(project_dir='/tmp/p')
+        self.assertIn('--project-dir /tmp/p', hints.query('map'))
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
             agent_interface.build_parser().parse_args(['map', '--db-path', 'one', '--project-dir', 'two'])
+        self.assertEqual(json.loads(out.getvalue())['command'], 'map')
+
+    def test_global_flags_may_precede_the_subcommand(self):
+        self.assertEqual(runtime.hoist(['--project-dir', 'p', 'map', '--limit', '3'], ('map',)),
+                         ['map', '--project-dir', 'p', '--limit', '3'])
+        self.assertEqual(runtime.hoist(['--no-opencode-server', '--db-path=x', 'get', 'id'], ('get',)),
+                         ['get', '--no-opencode-server', '--db-path=x', 'id'])
+        args = runtime.parse_import(['--project-dir', '/tmp/p', 'status'])
+        self.assertEqual((args.command, args.project_dir), ('status', '/tmp/p'))
+        self.assertEqual(runtime.parse_import(['capture.xml', '/tmp/p']).project_dir, '/tmp/p')
+        self.assertEqual(runtime.parse_import(['rebuild']).project_dir, '.')
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            runtime.parse_import(['rebuild', '/tmp/a', '--project-dir', '/tmp/b'])
+        self.assertEqual(runtime.leading_command(['--project-dir', 'p', 'map']), 'map')
 
 
 if __name__ == '__main__':

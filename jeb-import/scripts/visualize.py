@@ -17,12 +17,11 @@ Two modes against a project's ChromaDB:
     recorded `attacks` verdict per endpoint (via TARGETS edges).
 
 Usage:
-  python visualize.py --db-path ./chroma_db --collection all \
-      --color-by collection --out vector_space.html
-  python visualize.py --db-path ./chroma_db --mode graph --out site_map.html
+  jeb viz --project-dir . --collection all --color-by collection --out vector_space.html
+  jeb viz --project-dir . --mode graph --out site_map.html
 
 Deps (viz only): numpy, scikit-learn, plotly, optional umap-learn.
-  pip install -r requirements-viz.txt
+  <jeb-import skill dir>/jeb setup --viz
 """
 if __name__ == '__main__':
     import sys
@@ -33,6 +32,7 @@ if __name__ == '__main__':
 import argparse
 import runtime
 import html
+import json
 import os
 import sys
 from collections import Counter, defaultdict
@@ -44,8 +44,8 @@ try:
     from sklearn.cluster import DBSCAN
     from sklearn.decomposition import PCA
 except ImportError as e:
-    sys.exit(f"Missing a viz dependency ({e.name}). Install with:\n"
-             f"  pip install -r {os.path.join(os.path.dirname(__file__), 'requirements-viz.txt')}")
+    raise ValueError(f"Missing a viz dependency ({e.name}). Install with: "
+             f"{os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'jeb')} setup --viz")
 
 KNOWN_COLLECTIONS = ('graph', 'attacks')
 DEFAULT_COLOR = {
@@ -99,6 +99,9 @@ def html_escape(value):
 
 
 def _connect(db_path):
+    if not os.path.isfile(os.path.join(db_path, 'chroma.sqlite3')):
+        # Never create an empty database just to report that it is empty.
+        raise ValueError(f'Project database does not exist: {os.path.abspath(db_path)}. Import a capture first.')
     client = chromadb.PersistentClient(path=os.path.abspath(db_path))
     have = {c.name for c in client.list_collections()}
     return client, have
@@ -135,7 +138,7 @@ def load(db_path, collections, sample=0):
         selected_by_collection[name].append(doc_id)
     for name in collections:
         if name not in have:
-            print(f"  (skipping '{name}': not in DB)")
+            print(f"  (skipping '{name}': not in DB)", file=sys.stderr)
             continue
         col = client.get_collection(name)
         collection_info[name] = dict(col.metadata or {})
@@ -160,9 +163,9 @@ def load(db_path, collections, sample=0):
             embs.append(emb)
             metas.append(m)
             kept += 1
-        print(f"  {name}: {kept} vectors" + ("" if kept == n else f" (of {n} loaded)"))
+        print(f"  {name}: {kept} vectors" + ("" if kept == n else f" (of {n} loaded)"), file=sys.stderr)
     if not ids:
-        sys.exit("No vectors found. Did you run the import pipeline?")
+        raise ValueError("No vectors found. Import a capture first.")
     return ids, np.asarray(embs, dtype=float), metas, collection_info, total_count
 
 
@@ -186,7 +189,7 @@ def reduce_dims(embs, method, neighbors, min_dist):
             return reducer.fit_transform(embs), 'umap'
         except ImportError:
             print("  umap-learn not installed; falling back to PCA "
-                  "(pip install umap-learn for better structure).")
+                  "(pip install umap-learn for better structure).", file=sys.stderr)
             return PCA(n_components=2).fit_transform(embs), 'pca'
     if method == 'tsne':
         from sklearn.manifold import TSNE
@@ -392,14 +395,14 @@ def stats_header(ids, embs, metas, near_dup, total_count=None):
 def run_embedding_mode(args):
     out = args.out or 'vector_space.html'
     color_by = args.color_by or DEFAULT_COLOR.get(args.collection, 'doc_kind')
-    print(f"Loading vectors from {args.db_path} ...")
+    print(f"Loading vectors from {args.db_path} ...", file=sys.stderr)
     ids, embs, metas, collection_info, total_count = load(args.db_path, [args.collection], args.sample)
     full_embs, full_metas = embs, metas
     full_scope = 'Sample-only ' if args.sample else 'Full-corpus '
     collections_html = collection_report(collection_info, full_metas, full_scope)
     segments_html = node_type_report(full_metas, full_scope)
 
-    print(f"Reducing {len(ids)} vectors with {args.reduce} ...")
+    print(f"Reducing {len(ids)} vectors with {args.reduce} ...", file=sys.stderr)
     coords, reducer = reduce_dims(embs, args.reduce, args.neighbors, args.min_dist)
 
     scatter = build_scatter(coords, ids, metas, color_by, args.size_by, reducer)
@@ -422,7 +425,8 @@ def run_embedding_mode(args):
     body.extend([clusters_html, "</body></html>"])
     with open(out, 'w') as f:
         f.write("\n".join(body))
-    print(f"\n✓ Wrote {out}  ({len(ids)} points, {reducer}, {near_dup} near-dup pairs)")
+    print(json.dumps({'command': 'viz', 'mode': 'embedding', 'output': os.path.abspath(out),
+                      'points': len(ids), 'reducer': reducer, 'near_duplicate_pairs': near_dup}))
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +440,9 @@ def load_graph(db_path, host=None):
     filters them out."""
     client, have = _connect(db_path)
     if not {'graph', 'edges'} <= have:
-        sys.exit("No 'graph'/'edges' collections in this DB. Run process_burp.sh rebuild <project_dir>.")
+        project = os.path.dirname(os.path.abspath(db_path))
+        raise ValueError("No 'graph'/'edges' collections in this database. Run: "
+                         f"jeb rebuild --project-dir {project}")
     from storage import scan
     col = client.get_collection('graph', embedding_function=None)
     got = col.get(where={'node_type': {'$in': ['route', 'origin', 'data_object']}},
@@ -448,7 +454,7 @@ def load_graph(db_path, host=None):
             continue
         nodes[doc_id] = m
     if not nodes:
-        sys.exit("No graph nodes found (check --host, or did the import run?).")
+        raise ValueError("No graph nodes found (check --host, or import a capture first).")
     edges = [dict(r['metadatas']) for r in scan(client.get_collection('edges', embedding_function=None))]
     attacks = {}
     if 'attacks' in have:
@@ -710,7 +716,7 @@ def graph_stats_header(route_nodes, entity_nodes, attacks, show_attacks):
 
 def run_graph_mode(args):
     out = args.out or 'site_map.html'
-    print(f"Loading graph from {args.db_path} ...")
+    print(f"Loading graph from {args.db_path} ...", file=sys.stderr)
     nodes, edges, attacks = load_graph(args.db_path, host=args.host)
     show_attacks = args.show_attacks
     if show_attacks is None:
@@ -735,13 +741,14 @@ def run_graph_mode(args):
     ]
     with open(out, 'w') as f:
         f.write("\n".join(body))
-    print(f"\n✓ Wrote {out}  ({len(route_nodes)} route/page/action/auth_model nodes, "
-          f"{len(entity_nodes)} entity nodes"
-          f"{', attack overlay on' if show_attacks else ''})")
+    print(json.dumps({'command': 'viz', 'mode': 'graph', 'output': os.path.abspath(out),
+                      'route_nodes': len(route_nodes), 'entity_nodes': len(entity_nodes),
+                      'attack_overlay': bool(show_attacks)}))
 
 
 def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v4 visualizer", allow_abbrev=False)
+    ap = runtime.JsonArgumentParser(prog='jeb viz', description="JEB visualizer: writes a self-contained HTML page.",
+                                    allow_abbrev=False)
     runtime.add_server_args(ap)
     location = ap.add_mutually_exclusive_group()
     location.add_argument('--db-path')

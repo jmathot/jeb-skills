@@ -33,8 +33,9 @@ Prompt scheme and cosine distance are derived/fixed, not environment overrides.
 Only explicitly supplied non-secret endpoint/server URL overrides are stored;
 provider-resolved URLs and credentials remain private to the execution.
 
-Existing `process_burp.sh` and `jeb-query.sh` entrypoints remain. Visualization and
-setup have explicit wrappers under `jeb-import/scripts`. There are no npm/build
+Each skill now has one launcher at its root (`<skill-dir>/jeb`). The older
+`process_burp.sh`, `jeb-query.sh`, `setup.sh` and `visualize.sh` scripts remain as
+compatibility aliases for it. There are no npm/build
 requirements, plugin entrypoints, native `jeb_*` tools, or plugin registrations.
 
 Plugin permission hooks cannot be reproduced by Markdown skills. Normal shell
@@ -47,9 +48,11 @@ launcher. OAuth/external credentials are never repurposed as embedding API keys.
 1. Back up the engagement database and preserve original Burp exports.
 2. Run `bash install-skills.sh`. For older installations without the new manifest,
    inspect conflicts and rerun with `--force` to retain backups.
-3. Run the installed `setup.sh` (`--viz` for plots); models are prepared separately.
-4. From the intended OpenCode configuration scope, run `process_burp.sh rebuild
-   /path/to/project` with the desired embedding switches from the README.
+3. Run `~/.config/opencode/skills/jeb-import/jeb setup` (`--viz` for plots); models are
+   prepared separately.
+4. From the intended OpenCode configuration scope, run
+   `~/.config/opencode/skills/jeb-import/jeb rebuild /path/to/project` with the desired
+   embedding switches from the README.
 5. Check `status`, investigate an endpoint, and confirm retained finding IDs/evidence.
 
 Old `structure`/`behavior` indexes are replaced by the graph. Retained observations

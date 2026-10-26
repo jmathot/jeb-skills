@@ -32,6 +32,12 @@ class InstallTests(unittest.TestCase):
         self.assertTrue((self.config / 'skills/jeb-import/scripts/embedding-profiles.json').is_file())
         self.assertTrue((self.config / 'skills/jeb-query/SKILL.md').is_file())
         self.assertTrue((self.config / 'agents/J.E.B.E.D.I.A.H..md').is_file())
+        for skill in ('jeb-import', 'jeb-query'):
+            launcher = self.config / 'skills' / skill / 'jeb'
+            self.assertTrue(os.access(launcher, os.X_OK), launcher)
+            self.assertTrue(list((self.config / 'skills' / skill / 'references').glob('*.md')))
+        # Everything stays inside the OpenCode configuration directory.
+        self.assertEqual({p.name for p in self.config.iterdir()}, {'opencode.jsonc', 'skills', 'agents'})
         venv = self.config / 'skills/jeb-import/scripts/venv/local'
         venv.parent.mkdir()
         venv.write_text('keep')

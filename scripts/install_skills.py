@@ -27,9 +27,13 @@ def install(config, force=False):
     for skill in ('jeb-import', 'jeb-query'):
         source = ROOT / skill
         sources[f'skills/{skill}/SKILL.md'] = source / 'SKILL.md'
-        for path in sorted((source / 'scripts').iterdir()):
-            if path.is_file() and not path.name.startswith('.'):
-                sources[f'skills/{skill}/scripts/{path.name}'] = path
+        sources[f'skills/{skill}/jeb'] = source / 'jeb'
+        for folder in ('scripts', 'references'):
+            if not (source / folder).is_dir():
+                continue
+            for path in sorted((source / folder).iterdir()):
+                if path.is_file() and not path.name.startswith('.'):
+                    sources[f'skills/{skill}/{folder}/{path.name}'] = path
     sources['agents/J.E.B.E.D.I.A.H..md'] = ROOT / 'agent/J.E.B.E.D.I.A.H..md'
     operations, conflicts = [], []
     for name, source in sources.items():
@@ -94,7 +98,7 @@ def install(config, force=False):
     print('No OpenCode configuration or plugin registration was changed.')
     for backup in backups.values():
         print(f'Backup: {backup}')
-    print(f'Next: bash "{config}/skills/jeb-import/scripts/setup.sh" [--viz]')
+    print(f'Next: "{config}/skills/jeb-import/jeb" setup [--viz]')
 
 
 def main():

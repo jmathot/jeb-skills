@@ -7,7 +7,7 @@ inherit the selections from Chroma; no settings file or environment exports.
 ## LiteLLM Qwen
 
 ```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project \
+~/.config/opencode/skills/jeb-import/jeb import capture.xml /path/to/project \
   --embedding-provider litellm --embedding-preset litellm-qwen3-embedding-8b \
   --embedding-model qwen/qwen3-embedding-8b --embedding-revision YOUR-PINNED-REVISION
 ```
@@ -15,7 +15,7 @@ bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture
 ## LiteLLM Gemini
 
 ```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project \
+~/.config/opencode/skills/jeb-import/jeb import capture.xml /path/to/project \
   --embedding-provider litellm --embedding-preset litellm-gemini-embedding-2 \
   --embedding-model gemini-embedding-2 --embedding-revision YOUR-PINNED-REVISION
 ```
@@ -25,7 +25,7 @@ bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture
 Manually prepare `embeddinggemma-2:latest` first; imports never download models:
 
 ```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project \
+~/.config/opencode/skills/jeb-import/jeb import capture.xml /path/to/project \
   --embedding-preset ollama-embeddinggemma2
 ```
 

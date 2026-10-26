@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# JEB query launcher: jeb <endpoint|map|search|get|similar|identifier|evidence|graph|attacks|record-attack> [args]
+# Shares the jeb-import environment; no PATH or environment changes needed.
+set -euo pipefail
+SKILL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMPORTER="$SKILL/../jeb-import/jeb"
+if [ ! -x "$IMPORTER" ]; then
+    python3 -c 'import json, sys; print(json.dumps({"command": "query", "error": sys.argv[1]}))' \
+        "jeb-import is not installed next to jeb-query ($IMPORTER); install both skills with install-skills.sh."
+    exit 1
+fi
+exec "$IMPORTER" query "$@"

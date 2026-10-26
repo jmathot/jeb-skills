@@ -212,7 +212,8 @@ def check_hint_contract(report):
     """Every `next` entry must parse as a real standalone command."""
     import agent_interface
     import runtime
-    parsers = {'jeb-query.sh': agent_interface.build_parser(), 'process_burp.sh': runtime.import_parser()}
+    # Hints name a skill launcher: <skill-dir>/jeb, for jeb-query or jeb-import.
+    parsers = {'jeb-query': agent_interface.build_parser(), 'jeb-import': runtime.import_parser()}
     commands = [
         ['map', '--limit', '3'], ['search', 'order record', '--limit', '3'],
         ['search', '--in', 'exchanges', '--contains', 'nginx', '--limit', '3'],
@@ -226,11 +227,12 @@ def check_hint_contract(report):
         for hint in payload.get('next', []):
             seen += 1
             parts = shlex.split(hint)
+            skill = os.path.basename(os.path.dirname(parts[0])) if parts else ''
             if not report.check(f'hints/{hint[:48]}/prefix',
-                                len(parts) > 2 and parts[0] == 'bash' and os.path.basename(parts[1]) in parsers, hint):
+                                len(parts) > 1 and os.path.basename(parts[0]) == 'jeb' and skill in parsers, hint):
                 continue
             try:
-                parsers[os.path.basename(parts[1])].parse_args(parts[2:])
+                parsers[skill].parse_args(runtime.hoist(parts[1:], agent_interface.COMMANDS + runtime.IMPORT_COMMANDS))
                 report.check(f'hints/{hint[:48]}/valid CLI', True)
             except SystemExit:
                 report.check(f'hints/{hint[:48]}/valid CLI', False, hint)
@@ -240,7 +242,7 @@ def check_hint_contract(report):
 def check_error_paths(report):
     cases = [
         (['search', '--in', 'exchanges', 'free text'], 'exact filters'),
-        (['search', '--in', 'graph', '--node-type', 'nonsense'], '--node-type must be'),
+        (['search', '--in', 'graph', '--node-type', 'nonsense'], 'invalid choice'),
         (['search', '--in', 'graph', '--severity', 'high'], 'not supported'),
         (['map', '--limit', '0'], 'must be positive'),
         (['map', '--offset', '-1'], 'nonnegative'),

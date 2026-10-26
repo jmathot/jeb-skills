@@ -13,7 +13,16 @@ import sys
 import threading
 from urllib.parse import quote, urlsplit
 
+from storage import LOOKUP_COLLECTIONS
+
 HERE = Path(__file__).resolve().parent
+EXPORT_COLLECTIONS = ('graph', 'attacks') + LOOKUP_COLLECTIONS
+IMPORT_COMMANDS = ('import', 'rebuild', 'status', 'abandon', 'export')
+# Commands that never embed: a stale saved selection must not block them.
+READ_ONLY_COMMANDS = ('status', 'export', 'abandon')
+# Accepted before or after the subcommand; (flag, takes a value).
+GLOBAL_FLAGS = {'--project-dir': True, '--db-path': True, '--opencode-server': True,
+                '--no-opencode-server': False}
 PROFILES = json.loads((HERE / 'embedding-profiles.json').read_text())
 ACTIVE = False
 SELECTION = None
@@ -40,6 +49,47 @@ EMBEDDING_FLAGS = {
     'workers': '--embed-workers', 'candidate_ceiling': '--candidate-ceiling',
     'max_distance_graph': '--max-distance-graph', 'max_distance_attacks': '--max-distance-attacks',
 }
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    """Usage errors use the same JSON envelope as runtime errors."""
+
+    def error(self, message):
+        command = self.prog.split()[-1] if ' ' in self.prog else self.command_word()
+        print(json.dumps({'command': command, 'error': message,
+                          'help': f'jeb {command} -h' if command else 'jeb -h'}))
+        sys.exit(2)
+
+    def command_word(self):
+        """The subcommand being parsed, for errors the top-level parser raises."""
+        choices = [a.choices for a in self._actions if isinstance(a, argparse._SubParsersAction)]
+        word = leading_command(sys.argv[1:]) or ''
+        return word if not choices or word in choices[0] else ''
+
+
+def hoist(argv, commands):
+    """Move global flags written before the subcommand to just after it.
+
+    Without a subcommand they are dropped, so the parser reports the missing
+    command or prints help instead of misreading a flag value as the command.
+    """
+    argv, leading = list(argv), []
+    while argv and argv[0] not in commands:
+        flag = argv[0].split('=', 1)[0]
+        if flag not in GLOBAL_FLAGS:
+            break
+        width = 2 if GLOBAL_FLAGS[flag] and '=' not in argv[0] else 1
+        leading += argv[:width]
+        del argv[:width]
+    return argv[:1] + leading + argv[1:] if argv and argv[0] in commands else argv
+
+
+def leading_command(argv):
+    """The subcommand word, skipping global flags written before it."""
+    i = 0
+    while i < len(argv) and argv[i].split('=', 1)[0] in GLOBAL_FLAGS:
+        i += 2 if GLOBAL_FLAGS[argv[i].split('=', 1)[0]] and '=' not in argv[i] else 1
+    return argv[i] if i < len(argv) and not argv[i].startswith('-') else None
 
 
 def get(name, default=None):
@@ -97,15 +147,21 @@ def add_server_args(parser):
 
 
 def import_parser():
-    parser = argparse.ArgumentParser(description='Import and maintain cumulative Burp XML captures in Chroma.', allow_abbrev=False)
+    parser = JsonArgumentParser(prog='jeb', description='Import and maintain cumulative Burp XML captures in Chroma.',
+                                epilog='Also: "jeb setup [--viz]" prepares the Python environment, and '
+                                       '"jeb viz --project-dir DIR [--mode embedding|graph]" writes an HTML '
+                                       'visualization. Run "jeb <command> -h" for its options.',
+                                allow_abbrev=False)
     subs = parser.add_subparsers(dest='command', required=True)
-    for command in ('import', 'rebuild', 'status', 'abandon', 'export'):
+    for command in IMPORT_COMMANDS:
         p = subs.add_parser(command, allow_abbrev=False)
         if command == 'import':
             p.add_argument('xml_file')
         if command == 'abandon':
             p.add_argument('capture_id')
-        p.add_argument('project_dir', nargs='?', default='.')
+        p.add_argument('project_dir', nargs='?')
+        p.add_argument('--project-dir', dest='project_dir_option', metavar='PROJECT_DIR',
+                       help='Same as the positional project directory (default: .)')
         if command in ('import', 'rebuild'):
             add_embedding_args(p)
             p.add_argument('--auth-cookies', action='append', default=None)
@@ -117,16 +173,30 @@ def import_parser():
         else:
             add_server_args(p)
         if command == 'export':
-            p.add_argument('--collection', choices=('graph', 'attacks', 'captures', 'exchanges', 'identifiers', 'edges'), required=True)
+            p.add_argument('--collection', choices=EXPORT_COLLECTIONS, required=True)
             p.add_argument('--output', required=True)
     return parser
 
 
+def parse_import(argv):
+    """Parse import arguments, resolving the positional/option project directory."""
+    parser = import_parser()
+    args = parser.parse_args(import_argv(argv))
+    if args.project_dir and args.project_dir_option and \
+            Path(args.project_dir).resolve() != Path(args.project_dir_option).resolve():
+        parser.error('Give the project directory once: positional or --project-dir.')
+    args.project_dir = args.project_dir_option or args.project_dir or '.'
+    return args
+
+
 def import_argv(argv):
+    """Hoisted import arguments; a bare capture file means `import`."""
     argv = list(argv)
-    if argv and argv[0] not in ('import', 'rebuild', 'status', 'abandon', 'export', '-h', '--help'):
+    word = leading_command(argv)
+    if word is not None and word not in IMPORT_COMMANDS and \
+            (word.lower().endswith('.xml') or Path(word).is_file()):
         argv.insert(0, 'import')
-    return argv
+    return hoist(argv, IMPORT_COMMANDS)
 
 
 def valid_url(value, label):
@@ -264,18 +334,43 @@ def selection_argv(selection):
     return args
 
 
-def persist(captures):
-    """Called under the import writer lock. Runtime-only changes do not reindex."""
+IDENTITY = ('preset', 'model', 'dimensions', 'context_tokens', 'revision')
+
+
+def stored(selection):
+    """The persisted form: vector identity stays pinned, while runtime defaults are
+    left out so later default changes still reach existing projects."""
+    result = {}
+    for key, value in selection.items():
+        if key == 'depth':
+            depth = {name: {field: v for field, v in fields.items() if DEPTH_DEFAULTS[name][field] != v}
+                     for name, fields in value.items()}
+            depth = {name: fields for name, fields in depth.items() if fields}
+            if depth:
+                result['depth'] = depth
+        elif key in IDENTITY or key not in DEFAULTS or value != DEFAULTS[key]:
+            result[key] = value
+    return result
+
+
+def persist(captures, indexed=False):
+    """Called under the import writer lock once the command is committed to the
+    selection (see rebuild_project). Runtime-only changes do not reindex.
+    `indexed` means the stored vectors already match this selection."""
     if SELECTION is None:
         return
     meta = dict(captures.metadata or {})
     current = json.loads(meta[CONFIG_KEY]) if meta.get(CONFIG_KEY) else None
     if current != ORIGINAL:
         raise ValueError('Project embedding selections changed concurrently; retry the command.')
-    if current != SELECTION:
-        meta[CONFIG_KEY] = json.dumps(SELECTION, sort_keys=True)
-        identity = ('preset', 'model', 'dimensions', 'context_tokens', 'revision')
-        if current is None or any(current.get(k) != SELECTION.get(k) for k in identity):
+    saved = stored(SELECTION)
+    if current != saved:
+        meta[CONFIG_KEY] = json.dumps(saved, sort_keys=True)
+        try:
+            previous = validate(current) if current is not None else None
+        except ValueError:
+            previous = None
+        if not indexed and (previous is None or any(previous.get(k) != SELECTION.get(k) for k in IDENTITY)):
             meta['index_state'] = 'pending'
         captures.modify(metadata=meta)
 
@@ -359,32 +454,42 @@ def run(mode, argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     scripts = {'import': HERE / 'import_project.py',
                'query': HERE.parents[1] / 'jeb-query/scripts/agent_interface.py',
-               'visualize': HERE / 'visualize.py'}
+               'visualize': HERE / 'visualize.py',
+               'store': HERE / 'vector_store.py'}
+    command = 'viz' if mode == 'visualize' else leading_command(argv) or mode
     try:
         if mode == 'import':
             argv = import_argv(argv)
-            args = import_parser().parse_args(argv)
+            args = parse_import(argv)
+            command = args.command
             db_path = Path(args.project_dir).resolve() / 'chroma_db'
+            read_only = command in READ_ONLY_COMMANDS
         else:
-            parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+            parser = JsonArgumentParser(prog='jeb', add_help=False, allow_abbrev=False)
             group = parser.add_mutually_exclusive_group()
             group.add_argument('--project-dir')
             group.add_argument('--db-path')
             add_server_args(parser)
             args, _ = parser.parse_known_args(argv)
             db_path = (Path(args.project_dir) / 'chroma_db' if args.project_dir else Path(args.db_path or './chroma_db')).resolve()
+            read_only = mode == 'visualize'
         options = argv[:argv.index('--')] if '--' in argv else argv
         if '-h' not in options and '--help' not in options:
             ORIGINAL = load_selection(db_path)
-            SELECTION = select(ORIGINAL, args)
+            try:
+                SELECTION = select(ORIGINAL, args)
+            except ValueError:
+                if not read_only:
+                    raise
+                SELECTION = None  # Never embeds; defaults suffice to inspect a stale project.
         CONNECTION = None
         ACTIVE = True
         sys.argv = [str(scripts[mode]), *argv]
         runpy.run_path(str(scripts[mode]), run_name='__main__')
         return 0
     except (ValueError, OSError) as exc:
-        print(json.dumps({'error': str(exc)}))
-        return 2
+        print(json.dumps({'command': command, 'error': str(exc)}))
+        return 1
 
 
 if __name__ == '__main__':

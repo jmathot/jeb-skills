@@ -1,146 +1,64 @@
 ---
 name: jeb-import
-description: Import Burp XML into a cumulative Chroma knowledge graph, select embedding providers with command-line switches, rebuild or inspect status, export evidence, and visualize captures. Use for ingestion and maintenance; use jeb-query for investigation.
+description: Import Burp Suite XML into a project's cumulative Chroma knowledge graph; choose the embedding backend; rebuild, check status, abandon failed captures, export, and visualize. Use for ingestion and maintenance; use jeb-query to investigate.
 ---
 
-# J.E.B. — Capture Import and Maintenance
+# J.E.B. — import and maintenance
 
-Run in the engagement project, separate from the skill repository. Examples show
-the default installation; use this skill's actual base directory when different.
+Every command goes through this skill's launcher: `<skill-dir>/jeb`, which is
+`~/.config/opencode/skills/jeb-import/jeb` in a default install. It needs no PATH or
+environment changes. Run it from the engagement project, or pass `--project-dir DIR`
+(before or after the command). The skill directory is source code, not engagement data.
 
-## Setup
-
-Python 3.10+ is required. Explicitly prepare the shared environment once; `--viz`
-also installs plotting dependencies. Setup never downloads or calls a model:
-
-```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/setup.sh --viz
-```
-
-## Embedding selection (no settings file or shell exports)
+## Setup (once)
 
 ```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project \
-  --embedding-provider litellm \
-  --embedding-preset litellm-qwen3-embedding-8b \
-  --embedding-model qwen/qwen3-embedding-8b \
-  --embedding-revision YOUR-PINNED-DEPLOYMENT-REVISION
+~/.config/opencode/skills/jeb-import/jeb setup        # add --viz for plotting
 ```
 
-Non-secret selections are stored in the existing `captures` collection. Subsequent
-imports and queries inherit them. LiteLLM requires a pinned deployment revision
-and a gateway with cross-model fallback disabled. Gateway aliases alone do not
-identify immutable weights.
+Needs Python 3.10+. Setup creates a venv inside the skill and never downloads or
+calls a model.
 
-| Preset | Default dimensions | Maximum context |
-|---|---:|---:|
-| `ollama-embeddinggemma2` | 768 | 8192 |
-| `litellm-gemini-embedding-2` | 3072 | 8192 |
-| `litellm-qwen3-embedding-8b` | 4096 | 32768 |
+## Commands
 
-Without switches, new projects use local Ollama. Manually prepare
-`embeddinggemma-2:latest`; old `embeddinggemma` is a different model.
+| Need | Command |
+|---|---|
+| Import a capture | `jeb import capture.xml [--project-dir DIR]` |
+| Re-derive indexes (no XML needed) | `jeb rebuild` |
+| Inspect parse/index state and the loss ledger | `jeb status` |
+| Exclude a failed/interrupted capture | `jeb abandon <capture_id>`, then `jeb rebuild` |
+| Export a collection as NDJSON | `jeb export --collection graph --output FILE` |
+| Site map / vector-space HTML | `jeb viz --mode graph --out FILE` (or `--mode embedding`) |
 
-Other switches on `import` and `rebuild`: `--embedding-dimensions N`,
-`--embedding-context-tokens N`, `--embedding-timeout SECONDS`,
-`--embedding-send-dimensions` / `--no-embedding-send-dimensions` (LiteLLM),
-`--embedding-base-url URL`, `--embedding-keep-alive DURATION`, and
-`--opencode-server URL` for private/remote OpenCode server lookup.
-Selecting another preset resets inherited model-specific defaults. Use `rebuild`
-with the new switches to migrate an existing database, never delete it.
+Imports are cumulative: each new capture adds to the project, and every exchange
+is retained with its capture provenance (duplicates are merged only in the
+derived indexes). Analysis flags (on `import`/`rebuild`) persist for the project:
+- `--auth-cookies NAME[,NAME...]` sets the custom session cookie names; `''` clears them.
+- `--no-auto-detect-auth-cookies` turns off login-cookie inference.
 
-Runtime budgets are also set through import/rebuild switches and inherited by
-queries: `--embed-batch-docs N`, `--embed-batch-chars N`, `--embed-workers N`,
-`--candidate-ceiling N`, `--max-distance-graph VALUE`, `--max-distance-attacks VALUE`.
-Distance values are [0, 2] or `none`. Depth overrides use
-`--depth-<quick|normal|deep>-<candidate-k|n-results|max-per-endpoint|snippet-len|raw-chars> N`.
-Counts are positive; snippet/raw budgets may be zero. Runtime-only changes do not
-invalidate vectors. Use `--no-embedding-provider`, `--no-embedding-base-url`, or
-`--no-opencode-server` to clear a saved override. No legacy JEB environment setting
-is read, including endpoint URLs, keys, headers, model selection, or tuning values.
+Output is JSON, or plain progress lines for `import`/`rebuild`. Errors are JSON
+`{"command", "error"}` with a nonzero exit.
 
-The Python launcher privately resolves the selected OpenCode provider through
-`opencode api`, in the invocation's configuration scope, only when needed for an
-embedding request. Resolved secrets, headers, and provider endpoint URLs are not
-copied to Chroma. Explicit non-secret URL switches are saved. Authenticated endpoints
-must use an OpenCode provider; a direct base URL without a provider is keyless.
-Configured custom authentication headers and keyless providers are supported.
-Only API-key connections are supported; OAuth/external credentials are not forwarded.
-The public credential-list API returns all secrets: its response stays inside the
-launcher, never in a tool result. Do not manually dump provider/credential responses.
-Ambiguous/unusable stored credential connections fail closed. The OpenCode CLI's
-existing authentication context is used; no JEB key/password switches are provided.
+## Embedding backend
 
-Distilled capture content is sent to the selected gateway/upstream. Confirm that
-the user intends remote processing and accepts its logging/retention before the
-first remote embedding operation. Normal shell permissions apply; standalone
-skills do not provide a separate embedding permission hook.
+New projects default to local Ollama `embeddinggemma-2:latest`. The user must pull
+that model with Ollama; you cannot. To use a remote backend, pass switches on the
+first `import`, or on `rebuild` to migrate an existing project. For example,
+`--embedding-provider litellm --embedding-preset litellm-qwen3-embedding-8b --embedding-model qwen/qwen3-embedding-8b --embedding-revision <pinned>`
+(`--embedding-model` is the gateway's alias; ask the user if unsure).
+Selections are saved in the project and inherited by later imports and queries.
 
-## Operations
+**Before the first remote embedding, confirm that the user agrees to send distilled
+capture content to that gateway.** Credentials come from OpenCode's own provider
+configuration and are never stored or printed.
 
-```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import capture.xml /path/to/project
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh rebuild /path/to/project
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh status /path/to/project
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh abandon <capture_id> /path/to/project
-```
+Read `references/embedding.md` for presets, every switch, credentials and runtime budgets.
 
-Legacy `capture.xml [project_dir]` invocation remains supported. Normal imports
-stream directly into Chroma with an OS-released writer lock, without intermediate
-JSON files. Capture parse state and index state are separate; inspect status after
-an error. Resume parsing from source or rebuild from ready retained observations.
-Abandon excludes failed/interrupted captures without deleting evidence; rebuild
-afterward. Rebuild requires no original XML.
+## Rules
 
-Omitted analysis flags inherit saved settings. Explicit flags apply corpus-wide:
+- Never delete `chroma_db/` to fix an error. Run `status`, then `rebuild`, which keeps
+  findings and source evidence.
+- Keep the original XML exports. `rebuild` doesn't need them, but a reimport does.
+- After a failure, `status` separates capture parse state from project index state.
 
-- `--auth-cookies NAME[,NAME...]` (repeatable) replaces custom cookie names;
-  `--auth-cookies ''` clears them.
-- `--auto-detect-auth-cookies` / `--no-auto-detect-auth-cookies` controls
-  origin-scoped login-cookie inference (enabled for new projects).
-- `--rebuild` forces derived rebuilding during import.
-
-## Storage, evidence, and recovery
-
-Embedded collections: typed `graph` nodes and recorded `attacks`. Lookup-only
-collections: `captures`, `exchanges`, `identifiers`, `edges`; they never embed.
-No SQL/FTS sidecar, BM25, or lexical index is added.
-
-Full decoded HTTP and original base64 remain in `exchanges`. Repeated observations
-survive, as does original capture membership. Global analysis retains compact
-features, hydrating source bodies on demand. Bounded batches reduce memory/model
-cost; metadata-only changes retain vectors. Status reports the loss ledger for
-derived representations; bounded previews do not replace source evidence.
-
-Parser, feature, identifier, graph-schema, and embedding profile versions control
-repeated work. Legacy `structure`/`behavior` projects migrate through rebuild.
-Older sources without retained observations must be reimported; summaries cannot
-reconstruct missing history. Never delete a database to fix profile mismatches.
-
-Finding IDs and structured evidence survive rebuild. Interrupted finding migration
-uses `attacks_rebuild_backup`; writes are blocked until migration finishes. Rebuild
-repairs pending identifiers. Legacy free-form findings remain readable but may be
-marked `legacy-unstructured`. Preserve original exports and back up databases before
-migration. Legacy JSON/SQLite files are not removed.
-
-## Explicit export and visualization
-
-Export requires an unused destination and writes NDJSON:
-
-```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh export /path/to/project \
-  --collection graph --output /path/to/graph.ndjson
-```
-
-Export supports all six collections. Standalone parser/builders are export
-utilities, not normal pipeline stages, and require explicit output destinations.
-
-```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/visualize.sh \
-  --project-dir /path/to/project --mode graph --out /path/to/site-map.html
-bash ~/.config/opencode/skills/jeb-import/scripts/visualize.sh \
-  --project-dir /path/to/project --mode embedding --out /path/to/vectors.html
-```
-
-Visualization reads stored vectors and edges without calling an embedding provider.
-Select output paths deliberately and keep engagement files outside the skills tree.
+Read `references/storage.md` for collections, recovery, migration and export details.

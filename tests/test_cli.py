@@ -27,12 +27,16 @@ class CliTests(unittest.TestCase):
         result = subprocess.run(['bash', str(ROOT / 'install-skills.sh')], env=cls.env, capture_output=True, text=True)
         if result.returncode:
             raise RuntimeError(result.stderr)
+        cls.importer = cls.config / 'skills/jeb-import/jeb'
+        cls.querier = cls.config / 'skills/jeb-query/jeb'
         cls.imports = cls.config / 'skills/jeb-import/scripts'
         cls.queries = cls.config / 'skills/jeb-query/scripts'
         python = cls.imports / 'venv/bin/python'
         python.parent.mkdir(parents=True)
         python.write_text('#!/bin/sh\nexec ' + shlex.join([sys.executable, str(ROOT / 'tests/offline_cli.py')]) + ' "$@"\n')
         python.chmod(0o755)
+        for stamp in ('.jeb-requirements', '.jeb-viz-requirements'):
+            (cls.imports / 'venv' / stamp).write_text('offline')
         fake_bin = cls.directory / 'bin'
         fake_bin.mkdir()
         fake = fake_bin / 'opencode'
@@ -63,27 +67,40 @@ Content-Type: application/json\r
 {"id":42,"status":"ready","email":"test@example.invalid"}]]></response>
 </item></items>''')
 
-    def run_cli(self, script, *args, check=True):
-        result = subprocess.run(['bash', str(script), *map(str, args)], cwd=self.project,
+    def run_cli(self, script, *args, check=True, cwd=None):
+        # Launchers run directly: the installed executable bit is part of the contract.
+        result = subprocess.run([str(script), *map(str, args)], cwd=cwd or self.project,
                                 env=self.env, capture_output=True, text=True, timeout=60)
         self.assertNotIn('offline-secret', result.stdout + result.stderr)
         if check:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
-    def query(self, *args):
-        return json.loads(self.run_cli(self.queries / 'jeb-query.sh', *args).stdout)
+    def query(self, *args, cwd=None):
+        return json.loads(self.run_cli(self.querier, *args, cwd=cwd).stdout)
+
+    def run_hints(self, result, cwd):
+        ran = 0
+        for hint in result['next']:
+            if '<' in hint:
+                continue
+            # Hints are shell commands (they may start with ~/), so run them through bash.
+            done = subprocess.run(['bash', '-c', hint], cwd=cwd, env=self.env,
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, hint + '\n' + done.stdout + done.stderr)
+            ran += 1
+        self.assertTrue(ran)
 
     def test_full_workflow_and_profile_migration(self):
-        self.run_cli(self.imports / 'process_burp.sh', 'import', self.capture, self.project,
+        self.run_cli(self.importer, 'import', self.capture, self.project,
                      '--embedding-provider', 'litellm', '--embedding-preset', 'litellm-qwen3-embedding-8b',
                      '--embedding-model', 'qwen/qwen3-embedding-8b', '--embedding-revision', 'offline-rev-1',
                      '--embedding-dimensions', '32', '--embed-batch-docs', '3', '--embed-workers', '1',
                      '--candidate-ceiling', '250', '--max-distance-graph', 'none', '--depth-deep-candidate-k', '150')
-        status = json.loads(self.run_cli(self.imports / 'process_burp.sh', 'status', self.project).stdout)
+        status = json.loads(self.run_cli(self.importer, 'status', self.project).stdout)
         self.assertEqual(status['project']['index_state'], 'complete')
         self.assertEqual(status['collections']['lookup']['exchanges'], 1)
-        saved = json.loads(status['project']['embedding_config'])
+        saved = status['project']['embedding_config']
         self.assertEqual(saved['provider'], 'litellm')
         self.assertEqual(saved['batch_docs'], 3)
         self.assertEqual(saved['workers'], 1)
@@ -100,7 +117,7 @@ Content-Type: application/json\r
             self.assertTrue(self.query('endpoint', '/api/orders/42')['count'])
             self.assertTrue(self.query('graph', route['id'])['count'])
             self.assertTrue(self.query('identifier', '42')['count'])
-            unavailable = self.run_cli(self.queries / 'jeb-query.sh', 'search', 'order status', check=False)
+            unavailable = self.run_cli(self.querier, 'search', 'order status', check=False)
             self.assertNotEqual(unavailable.returncode, 0)
             self.assertIn('Could not resolve OpenCode', json.loads(unavailable.stdout)['error'])
         finally:
@@ -114,16 +131,15 @@ Content-Type: application/json\r
                              '--evidence', 'offline evidence', '--event-id', 'offline-event')
         finding_id = finding['recorded']
         endpoint = self.query('endpoint', '/api/orders/42')
-        for hint in endpoint['next']:
-            if '<' in hint:
-                continue
-            result = subprocess.run(shlex.split(hint), cwd=self.directory, env=self.env,
-                                    capture_output=True, text=True, timeout=60)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(any('--db-path' in h or '--project-dir' in h for h in endpoint['next']))
+        self.run_hints(endpoint, self.project)
+        # An explicit project survives into hints, so they also run from elsewhere.
+        self.run_hints(self.query('--project-dir', self.project, 'endpoint', '/api/orders/42',
+                                  cwd=self.directory), self.directory)
         self.assertEqual(self.query('get', finding_id)['document']['id'], finding_id)
         for preset, dimensions, revision in [('litellm-gemini-embedding-2', '128', 'offline-rev-2'),
                                              ('litellm-qwen3-embedding-8b', '32', 'offline-rev-3')]:
-            self.run_cli(self.imports / 'process_burp.sh', 'rebuild', self.project,
+            self.run_cli(self.importer, 'rebuild', self.project,
                          '--embedding-preset', preset, '--embedding-dimensions', dimensions,
                          '--embedding-revision', revision)
             self.assertEqual(self.query('attacks')['results'][0]['id'], finding_id)
@@ -131,35 +147,98 @@ Content-Type: application/json\r
             self.assertIn('offline evidence', json.dumps(evidence))
         try:
             fake.write_text('#!/bin/sh\nexit 99\n')
-            failed = self.run_cli(self.imports / 'process_burp.sh', 'rebuild', self.project,
+            failed = self.run_cli(self.importer, 'rebuild', self.project,
                                   '--embedding-revision', 'recovery-revision', check=False)
             self.assertNotEqual(failed.returncode, 0)
-            status = json.loads(self.run_cli(self.imports / 'process_burp.sh', 'status', self.project).stdout)
+            status = json.loads(self.run_cli(self.importer, 'status', self.project).stdout)
             self.assertEqual(status['project']['index_state'], 'failed')
             self.assertEqual(status['collections']['lookup']['exchanges'], 1)
         finally:
             fake.write_text(program)
-        self.run_cli(self.imports / 'process_burp.sh', 'rebuild', self.project)
+        self.run_cli(self.importer, 'rebuild', self.project)
         self.assertEqual(self.query('attacks')['results'][0]['id'], finding_id)
         export = self.directory / 'export.ndjson'
-        self.run_cli(self.imports / 'process_burp.sh', 'export', self.project,
+        self.run_cli(self.importer, 'export', self.project,
                      '--collection', 'exchanges', '--output', export)
         self.assertEqual(len(export.read_text().splitlines()), 1)
-        self.assertNotEqual(self.run_cli(self.imports / 'process_burp.sh', 'export', self.project,
+        self.assertNotEqual(self.run_cli(self.importer, 'export', self.project,
                                         '--collection', 'exchanges', '--output', export, check=False).returncode, 0)
-        self.run_cli(self.imports / 'process_burp.sh', 'import', self.capture, self.project)
+        self.run_cli(self.importer, 'import', self.capture, self.project)
         self.assertEqual(self.query('attacks')['results'][0]['id'], finding_id)
         for mode in ('graph', 'embedding'):
             output = self.directory / (mode + '.html')
-            self.run_cli(self.imports / 'visualize.sh', '--project-dir', self.project,
+            self.run_cli(self.importer, 'viz', '--project-dir', self.project,
                          '--mode', mode, '--out', output)
             self.assertIn('<html', output.read_text().lower())
 
+    def test_failed_import_keeps_selection_and_errors_are_json(self):
+        project = self.directory / 'failure project'
+        project.mkdir()
+        self.run_cli(self.importer, 'import', self.capture, '--project-dir', project)
+        before = json.loads(self.run_cli(self.importer, 'status', project).stdout)['project']
+        failed = self.run_cli(self.importer, 'import', self.directory / 'missing.xml', project,
+                              '--embedding-context-tokens', '4096', check=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(json.loads(failed.stdout)['command'], 'import')
+        # Global flags may precede the subcommand.
+        after = json.loads(self.run_cli(self.importer, '--project-dir', project, 'status').stdout)['project']
+        self.assertEqual(after['embedding_config'], before['embedding_config'])
+        self.assertEqual(after['index_state'], 'complete')
+        self.assertTrue(self.query('--project-dir', project, 'map', '--node-type', 'route')['count'])
+        bad = self.run_cli(self.querier, 'map', '--kind', 'nonsense', '--project-dir', project, check=False)
+        self.assertEqual(bad.returncode, 2)
+        error = json.loads(bad.stdout)
+        self.assertEqual(error['command'], 'map')
+        self.assertIn('nonsense', error['error'])
+        # Compatibility aliases still reach the launchers.
+        self.assertIn('captures', json.loads(self.run_cli(self.imports / 'process_burp.sh', 'status', project).stdout))
+        self.assertTrue(json.loads(self.run_cli(self.queries / 'jeb-query.sh', 'map', '--project-dir', project).stdout)['count'])
+        # A saved selection this version cannot validate blocks embedding, not inspection.
+        import chromadb
+        client = chromadb.PersistentClient(path=str(project / 'chroma_db'))
+        captures = client.get_collection('captures', embedding_function=None)
+        captures.modify(metadata={**captures.metadata, 'embedding_config': json.dumps({'preset': 'retired-preset'})})
+        del captures, client
+        self.assertIn('captures', json.loads(self.run_cli(self.importer, 'status', project).stdout))
+        stale = self.run_cli(self.importer, 'rebuild', project, check=False)
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn('preset', json.loads(stale.stdout)['error'])
+
+    def test_unprepared_environment_reports_setup_command(self):
+        stamp = self.imports / 'venv/.jeb-requirements'
+        stamp.rename(stamp.with_suffix('.hidden'))
+        try:
+            result = self.run_cli(self.querier, 'map', check=False)
+        finally:
+            stamp.with_suffix('.hidden').rename(stamp)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('jeb setup', json.loads(result.stdout)['error'])
+
     def test_help_does_not_create_database(self):
         missing = self.directory / 'missing project'
-        result = self.run_cli(self.queries / 'jeb-query.sh', 'map', '--project-dir', missing, '--help')
+        result = self.run_cli(self.querier, 'map', '--project-dir', missing, '--help')
         self.assertIn('--project-dir', result.stdout)
         self.assertFalse(missing.exists())
+
+    def test_launcher_errors_are_json_and_create_nothing(self):
+        empty = self.directory / 'never created'
+        for command, args in (('viz', ('--project-dir', empty, 'viz')),
+                              ('status', ('--project-dir', empty, 'status')),
+                              ('import', ('import', self.directory / 'missing.xml', '--project-dir', empty)),
+                              ('get', ('get', 'nope', '--project-dir', empty))):
+            launcher = self.querier if command == 'get' else self.importer
+            result = self.run_cli(launcher, *args, check=False)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['command'], command)
+        self.assertFalse(empty.exists())
+        bogus = self.run_cli(self.importer, 'bogus', check=False)
+        self.assertEqual(bogus.returncode, 2)
+        self.assertIn('invalid choice', json.loads(bogus.stdout)['error'])
+        # Leading global flags never turn the command word into a capture path.
+        self.assertIn('usage: jeb viz', self.run_cli(self.importer, '--project-dir', empty, 'viz', '-h').stdout)
+        self.assertIn('record-attack', self.run_cli(self.querier, '--project-dir', empty, '-h').stdout)
+        self.assertIn('jeb setup', self.run_cli(self.importer, '-h').stdout)
+        self.assertFalse(empty.exists())
 
     def test_upgrade_from_original_skills_main_preserves_sources_and_findings(self):
         # Pin the actual old skills source, not a hand-built approximation of its
@@ -196,15 +275,15 @@ Content-Type: application/json\r
         old_cli('jeb-import/scripts/import_project.py', 'export', project,
                 '--collection', 'exchanges', '--output', before_file)
         before = json.loads(before_file.read_text())
-        self.run_cli(self.imports / 'process_burp.sh', 'rebuild', project,
+        self.run_cli(self.importer, 'rebuild', project,
                      '--embedding-provider', 'litellm', '--embedding-preset', 'litellm-qwen3-embedding-8b',
                      '--embedding-revision', 'upgraded-revision', '--embedding-dimensions', '32')
-        status = json.loads(self.run_cli(self.imports / 'process_burp.sh', 'status', project).stdout)
+        status = json.loads(self.run_cli(self.importer, 'status', project).stdout)
         self.assertEqual(status['project']['index_state'], 'complete')
         self.assertEqual(status['collections']['lookup']['exchanges'], 1)
         self.assertNotIn('structure', status['collections']['embedded'])
         after_file = self.directory / 'after-upgrade.ndjson'
-        self.run_cli(self.imports / 'process_burp.sh', 'export', project,
+        self.run_cli(self.importer, 'export', project,
                      '--collection', 'exchanges', '--output', after_file)
         after = json.loads(after_file.read_text())
         self.assertEqual(before['id'], after['id'])

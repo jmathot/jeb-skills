@@ -14,7 +14,7 @@ import runtime
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='jeb-offline-facts-', dir='/tmp/opencode') as work, \
+    with tempfile.TemporaryDirectory(prefix='jeb-offline-facts-') as work, \
             patch.object(fixture, 'WORK', work), \
             patch.object(fixture, 'configure_live', return_value=runtime.validate({})), \
             patch.object(fixture, 'CLI_PREFIX', [str(Path(__file__).with_name('offline_cli.py'))]):

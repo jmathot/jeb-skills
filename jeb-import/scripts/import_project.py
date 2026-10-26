@@ -215,6 +215,7 @@ def rebuild_project(client, captures, config, force=False):
         for c in client.list_collections() if c.name in EMBEDDED_COLLECTIONS)
     if not force and profiles_ok and (captures.metadata or {}).get('index_state') == 'complete' \
             and (captures.metadata or {}).get('index_version') == version:
+        runtime.persist(captures, indexed=True)  # Same vector identity: runtime-only settings.
         print('Project indexes are current.')
         from findings import repair_identifiers
         repair_identifiers(client)
@@ -225,6 +226,9 @@ def rebuild_project(client, captures, config, force=False):
                          if r['metadatas'].get('state') in ('ready', 'complete', 'indexing'))
         if not allowed:
             raise ValueError('No ready captures to rebuild. Import or resume a capture first; existing indexes retained.')
+        # Saved only once committed: a failed parse or an empty project must not
+        # leave a selection that mismatches the stored vectors and blocks queries.
+        runtime.persist(captures)
         def load_many(ids):
             """Fetch stored observations by id in one round trip."""
             ids = [i for i in dict.fromkeys(ids) if i]
@@ -316,26 +320,48 @@ def rebuild_project(client, captures, config, force=False):
         raise
 
 
+def decoded(metadata):
+    """Project metadata with its JSON-encoded settings shown as objects."""
+    result = {}
+    for key, value in metadata.items():
+        if isinstance(value, str) and value[:1] in ('{', '['):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        result[key] = value
+    return result
+
+
 def main():
-    parser = runtime.import_parser()
-    args = parser.parse_args(runtime.import_argv(sys.argv[1:]))
+    args = runtime.parse_import(sys.argv[1:])
     db_path = str(Path(args.project_dir).resolve() / 'chroma_db')
     if args.command != 'import' and not Path(db_path).is_dir():
-        parser.error('Project database does not exist.')
+        raise ValueError(f'Project database does not exist: {db_path}. Import a capture first: '
+                         f'jeb import CAPTURE.xml --project-dir {Path(args.project_dir).resolve()}')
+    if args.command == 'import' and not Path(args.xml_file).is_file():
+        # Checked before the lock so a mistyped path leaves no empty project behind.
+        raise ValueError('Capture file not found: ' + str(Path(args.xml_file).resolve()))
     with writer_lock(db_path, shared=args.command in ('status', 'export')):
         d.ledger_reset()
         client = chromadb.PersistentClient(path=db_path)
         captures = lookup_collection(client, 'captures')
         if args.command == 'status':
-            print(json.dumps({'project': captures.metadata,
+            print(json.dumps({'command': 'status', 'project': decoded(captures.metadata or {}),
                               'collections': collection_counts(client),
                               'captures': list(scan(captures))}, indent=2))
             return
         if args.command == 'export':
+            if args.collection not in {c.name for c in client.list_collections()}:
+                raise ValueError(f"Project has no '{args.collection}' collection.")
             col = client.get_collection(args.collection, embedding_function=None)
+            count = 0
             with open(args.output, 'x') as handle:
                 for row in scan(col, include=('metadatas', 'documents'), page_size=20):
                     handle.write(json.dumps(row) + '\n')
+                    count += 1
+            print(json.dumps({'command': 'export', 'collection': args.collection,
+                              'output': str(Path(args.output).resolve()), 'count': count}))
             return
         if args.command == 'abandon':
             got = captures.get(ids=[args.capture_id], include=['metadatas'])
@@ -343,9 +369,10 @@ def main():
                 raise ValueError('Only failed or interrupted captures can be abandoned.')
             captures.update(ids=[args.capture_id], metadatas=[{'state': 'abandoned'}])
             update_project(captures, index_state='pending')
-            print('Capture excluded; source records retained. Run rebuild to refresh derived indexes.')
+            print(json.dumps({'command': 'abandon', 'capture_id': args.capture_id, 'state': 'abandoned',
+                              'next': 'Source records retained. Run rebuild to refresh derived indexes: '
+                                      f'jeb rebuild --project-dir {Path(args.project_dir).resolve()}'}))
             return
-        runtime.persist(captures)
         config = project_config(captures, args.auth_cookies, args.auto_detect)
         if args.command == 'import':
             ingest(client, captures, args.xml_file, config)

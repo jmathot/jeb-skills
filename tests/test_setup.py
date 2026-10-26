@@ -2,6 +2,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'jeb-import/scripts'))
 
 
 class SetupTests(unittest.TestCase):
@@ -24,7 +26,7 @@ class SetupTests(unittest.TestCase):
         spec.loader.exec_module(self.module)
         self.module.__file__ = str(self.here / 'setup_environment.py')
 
-    def run_setup(self, *args, fail=False):
+    def run_setup(self, *args, fail=False, status=0):
         def command(argv, **kwargs):
             if 'venv' in argv:
                 python = self.here / 'venv/bin/python'
@@ -34,8 +36,9 @@ class SetupTests(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, ['mock-pip'])
         with patch.object(sys, 'argv', ['setup_environment.py', *args]), \
                 patch.object(self.module.subprocess, 'run', side_effect=command) as run, \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.module.main()
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(self.module.main(), status)
+        self.assertEqual(json.loads(out.getvalue())['command'], 'setup')
         return run.call_count
 
     def test_readiness_stamp_and_dependency_change(self):
@@ -46,9 +49,13 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.run_setup('--viz'), 1)
         self.assertEqual(self.run_setup('--viz'), 0)
 
+    def test_viz_setup_also_satisfies_base_setup(self):
+        self.assertEqual(self.run_setup('--viz'), 2)
+        self.assertTrue((self.here / 'venv/.jeb-requirements').is_file())
+        self.assertEqual(self.run_setup(), 0)
+
     def test_failure_is_retryable_without_a_readiness_stamp(self):
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.run_setup(fail=True)
+        self.run_setup(fail=True, status=1)
         self.assertFalse((self.here / 'venv/.jeb-requirements').exists())
         self.assertEqual(self.run_setup(), 1)
 

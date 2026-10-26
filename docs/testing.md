@@ -7,7 +7,7 @@ temporary directories (prefer `/tmp/opencode` for manual host checks).
 ## Offline checks
 
 ```bash
-bash jeb-import/scripts/setup.sh --viz
+jeb-import/jeb setup --viz
 bash tests/run.sh --tier u
 python3 tests/offline_correctness.py
 python3 tests/host_smoke.py

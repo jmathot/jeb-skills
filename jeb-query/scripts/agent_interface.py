@@ -51,6 +51,12 @@ def screen_query(text, collection):
 
 COLLECTIONS = ('graph', 'attacks')
 ADDRESSABLE = COLLECTIONS + ('exchanges',)
+COMMANDS = ('endpoint', 'map', 'search', 'get', 'similar', 'identifier', 'evidence', 'graph',
+            'attacks', 'record-attack')
+# Stored facet values; argparse lists them on a typo instead of silently matching nothing.
+KINDS = ('page', 'action', 'endpoint', 'origin', 'auth_model', 'entity', 'posture', 'section', 'form')
+ACCESS_CONTROL = ('open-data', 'soft-auth-wall', 'enforced', 'unknown')
+ACCESS_CLASSES = ('data', 'denied', 'auth_wall', 'redirect', 'static', 'shell', 'empty', 'unknown', 'other')
 DEPTH = runtime.get('depth', runtime.DEPTH_DEFAULTS)
 
 
@@ -95,9 +101,7 @@ class JebAgent:
     def _validate(self, collection):
         if any((collection.metadata or {}).get(k) != v
                for k, v in EMBEDDING_PROFILE_METADATA.items()):
-            raise ValueError(f"Collection '{collection.name}' needs a rebuild. "
-                              'Run process_burp.sh rebuild <project_dir>; '
-                             'retain all original captures and the database.')
+            raise ValueError(hints.rebuild_note(f"Collection '{collection.name}' needs a rebuild."))
         self.embedding_ef.expected_digest = (collection.metadata or {}).get('embedding_model_digest', '')
 
     def sibling(self, name):
@@ -478,7 +482,7 @@ def execute(args):
     if command in ('get', 'similar'):
         collection = getattr(args, 'collection', None) or resolve_collection(args.db_path, args.target)
         if collection is None:
-            return envelope(command, results=[], notes=['ID not found.'], next=[hints.query('map')])
+            raise ValueError(f'ID not found: {args.target}. Find IDs with: ' + hints.query('map'))
     if command == 'identifier':
         collection = 'identifiers'
     if command == 'evidence':
@@ -564,9 +568,9 @@ def execute(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description='J.E.B. Chroma-only capture investigation')
+    parser = runtime.JsonArgumentParser(prog='jeb', description='J.E.B. Chroma-only capture investigation')
     sub = parser.add_subparsers(dest='command', required=True)
-    for command in ('endpoint', 'map', 'search', 'get', 'similar', 'identifier', 'evidence', 'graph', 'attacks', 'record-attack'):
+    for command in COMMANDS:
         p = sub.add_parser(command, allow_abbrev=False)
         runtime.add_server_args(p)
         location = p.add_mutually_exclusive_group()
@@ -589,22 +593,26 @@ def build_parser():
         if command in ('search', 'get', 'similar'):
             p.add_argument('--in', dest='collection', choices=ADDRESSABLE if command in ('get', 'search') else COLLECTIONS)
         if command in ('map', 'search'):
-            p.add_argument('--node-type')
+            p.add_argument('--node-type', choices=ontology.EMBEDDED_TYPES)
         if command in ('endpoint', 'map', 'search', 'similar', 'attacks'):
             p.add_argument('--depth', choices=DEPTH, default='normal')
             p.add_argument('--limit', type=int)
             p.add_argument('--host')
+        if command in ('map', 'search', 'similar', 'attacks'):
             p.add_argument('--path')
         if command in ('map', 'search', 'attacks'):
             p.add_argument('--offset', type=int, default=0, help='metadata listing offset (no query text)')
             p.add_argument('--method', action='append')
-            for field in ('status', 'kind', 'access-control', 'access-class', 'contains', 'where',
-                          'vuln-class', 'verdict', 'severity'):
-                p.add_argument('--' + field)
+            for field in ('status', 'contains', 'where', 'vuln-class', 'verdict', 'severity'):
+                p.add_argument('--' + field, help=argparse.SUPPRESS if field == 'where' else None)
+            p.add_argument('--kind', choices=KINDS)
+            p.add_argument('--access-control', choices=ACCESS_CONTROL)
+            p.add_argument('--access-class', choices=ACCESS_CLASSES)
             for field in ('anon', 'auth', 'cors-open', 'include-static', 'anon-matches-auth', 'cookie-issues', 'jwt'):
                 p.add_argument('--' + field, action='store_true')
-            for field in ('param', 'cookie', 'missing-header'):
+            for field in ('param', 'cookie'):
                 p.add_argument('--' + field, action='append')
+            p.add_argument('--missing-header', action='append', choices=sorted(set(d.SECURITY_HEADERS.values())))
         if command == 'endpoint':
             p.add_argument('--method')
             p.add_argument('--no-raw', action='store_true')
@@ -624,9 +632,9 @@ def build_parser():
 
 
 def main():
-    args = build_parser().parse_args()
+    args = build_parser().parse_args(runtime.hoist(sys.argv[1:], COMMANDS))
+    hints.set_location(args.project_dir, args.db_path)
     args.db_path = os.path.join(args.project_dir, 'chroma_db') if args.project_dir else (args.db_path or './chroma_db')
-    hints.set_database(args.db_path)
     if hasattr(args, 'opencode_server'):
         hints.set_server(args.opencode_server)
     try:
@@ -639,15 +647,20 @@ def main():
             client = chromadb.PersistentClient(path=os.path.abspath(args.db_path))
             names = {c.name for c in client.list_collections()}
             if 'attacks_rebuild_backup' in names:
-                result.setdefault('notes', []).append('Finding migration pending; resume import with --rebuild.')
+                result.setdefault('notes', []).append(hints.rebuild_note('Finding migration pending.'))
                 result['finding_migration_pending'] = True
             if 'captures' in names:
                 captures = client.get_collection('captures', embedding_function=None)
-                pending = [r['id'] for r in scan(captures)
-                           if r['metadatas'].get('state') not in ('ready', 'complete', 'indexing', 'abandoned')]
+                states = {r['id']: r['metadatas'].get('state') for r in scan(captures)}
+                pending = [i for i, s in states.items() if s not in ('ready', 'complete', 'indexing', 'abandoned')]
                 state = (captures.metadata or {}).get('index_state', 'unknown')
                 if state != 'complete':
-                    result.setdefault('notes', []).append(f'Derived index state: {state}; run project rebuild.')
+                    reason = f'Derived index state: {state}.'
+                    if not any(s in ('ready', 'complete', 'indexing') for s in states.values()):
+                        # Nothing to rebuild from: a rebuild would only fail.
+                        result.setdefault('notes', []).append(hints.import_note(reason))
+                    else:
+                        result.setdefault('notes', []).append(hints.rebuild_note(reason))
                     result['index_state'] = state
                 if pending:
                     result.setdefault('notes', []).append('Import incomplete; derived results may be partial. Resume the import.')
@@ -656,7 +669,7 @@ def main():
         return 0
     except Exception as exc:
         print(json.dumps(envelope(args.command, results=[], error=str(exc))))
-        return 2
+        return 1
 
 
 if __name__ == '__main__':

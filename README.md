@@ -16,13 +16,25 @@ and a configured embedding backend.
 
 ```bash
 bash install-skills.sh
-bash ~/.config/opencode/skills/jeb-import/scripts/setup.sh --viz
+~/.config/opencode/skills/jeb-import/jeb setup --viz
 ```
 
 The installer copies `jeb-import`, `jeb-query`, and the primary
-`J.E.B.E.D.I.A.H.` agent into the OpenCode configuration directory. Select the
-agent in OpenCode, or use either skill from another agent. Supporting commands are
-resolved relative to each skill's installed base directory.
+`J.E.B.E.D.I.A.H.` agent into the OpenCode configuration directory, and writes
+nothing anywhere else. The Python environment lives inside the `jeb-import` skill.
+Nothing is added to `PATH` and no environment variables are needed. Each skill has
+one launcher at its root, `<skill-dir>/jeb`:
+
+| Launcher | Commands |
+|---|---|
+| `~/.config/opencode/skills/jeb-import/jeb` | `setup`, `import`, `rebuild`, `status`, `abandon`, `export`, `viz` |
+| `~/.config/opencode/skills/jeb-query/jeb` | `endpoint`, `map`, `search`, `get`, `similar`, `identifier`, `evidence`, `graph`, `attacks`, `record-attack` |
+
+The examples below write `jeb` for the matching launcher. `--project-dir` (and
+`--opencode-server`) may come before or after the command. The older
+`scripts/process_burp.sh`, `jeb-query.sh`, `setup.sh` and `visualize.sh` remain
+as compatibility aliases. Select the agent in OpenCode, or use either skill from
+another agent. Each `SKILL.md` stays short, and the detail is in its `references/`.
 
 - Honors `OPENCODE_CONFIG_DIR`, then `${XDG_CONFIG_HOME:-$HOME/.config}/opencode`.
 - Preserves OpenCode JSONC/configuration, installed environments, local files,
@@ -46,7 +58,7 @@ disable their registration separately if you only want the skills interface.
 No JEB settings file or environment-variable exports are required:
 
 ```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh import \
+~/.config/opencode/skills/jeb-import/jeb import \
   capture.xml /path/to/engagement \
   --embedding-provider litellm \
   --embedding-preset litellm-qwen3-embedding-8b \
@@ -60,8 +72,10 @@ the upstream model ID. The Python launcher captures `opencode api` responses
 privately and uses resolved endpoint settings, headers, and API-key credentials.
 It never dumps provider/credential responses into the conversation.
 
-Non-secret selections are saved in the existing Chroma `captures` metadata.
-Later imports and queries inherit them. Provider-resolved endpoints, headers,
+Non-secret selections are saved in the existing Chroma `captures` metadata
+once the command commits to them; a failed import leaves the previous selection.
+Later imports and queries inherit them. Runtime budgets are saved only when
+overridden, so improved defaults still reach existing projects. Provider-resolved endpoints, headers,
 and secrets stay in memory and are not copied into Chroma or command arguments.
 An endpoint/server URL explicitly supplied through a switch is a non-secret saved
 selection; URLs containing credentials or query strings are rejected. There is no
@@ -152,9 +166,9 @@ are not JEB engine configuration and remain under OpenCode/OS control.
 ## Investigate
 
 ```bash
-bash ~/.config/opencode/skills/jeb-query/scripts/jeb-query.sh endpoint \
+~/.config/opencode/skills/jeb-query/jeb endpoint \
   https://app.example/api/orders/42 --project-dir /path/to/engagement
-bash ~/.config/opencode/skills/jeb-query/scripts/jeb-query.sh search \
+~/.config/opencode/skills/jeb-query/jeb search \
   "password reset email" --node-type behavior --project-dir /path/to/engagement
 ```
 
@@ -164,9 +178,9 @@ both. Without either switch, commands use the current directory's `chroma_db`.
 | Command | Purpose |
 |---|---|
 | `endpoint <path-or-url>` | First move for a named route: protocol facts, auth, related data, raw preview |
-| `map --kind endpoint` / `map --kind auth_model` | Orient by route or session model |
+| `map --node-type route` / `map --node-type origin` | Orient by route (`--kind page\|action\|endpoint`) or session model |
 | `search [text]` | Semantic discovery or exact metadata/substring filters |
-| `graph <id> --direction both --hops 1` | Follow typed stored relationships, one or two hops |
+| `graph <id> [--rel REL] [--hops 2]` | Follow typed stored relationships, one or two hops |
 | `get <id> [--original]` | Full document or source evidence, optional original base64 |
 | `similar <id>` | Related documents using a stored vector |
 | `identifier <value>` | Exact extracted value associations |
@@ -174,9 +188,10 @@ both. Without either switch, commands use the current directory's `chroma_db`.
 | `attacks` / `record-attack` | Recall/record testing events with durable IDs and evidence |
 
 Query responses are JSON with bounded previews, pagination/consistency diagnostics,
-and quoted executable follow-up commands retaining the selected database. Fill any
-explicit placeholders before executing. Operational failures return JSON errors
-and nonzero status. Maintenance commands also print progress; `status` prints JSON.
+and quoted executable follow-up commands (`next`). Those commands repeat the project
+selection you gave: none for the current directory, otherwise `--project-dir`/`--db-path`.
+Fill any explicit placeholders before executing. Operational failures, including
+usage errors and invalid filter values, return JSON errors and nonzero status. Maintenance commands also print progress; `status` prints JSON.
 
 Use `--in graph|attacks` for semantic scope; `--in exchanges --contains TEXT` scans
 full decoded source HTTP without embedding. `--node-type` narrows graph searches.
@@ -214,16 +229,16 @@ identifiers or response shapes do not establish an authorization failure.
 ## Maintenance and migration
 
 ```bash
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh status /path/to/engagement
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh rebuild /path/to/engagement
-bash ~/.config/opencode/skills/jeb-import/scripts/process_burp.sh export /path/to/engagement \
-  --collection graph --output /path/to/graph.ndjson
-bash ~/.config/opencode/skills/jeb-import/scripts/visualize.sh \
-  --project-dir /path/to/engagement --mode graph --out /path/to/site-map.html
+jeb status /path/to/engagement
+jeb rebuild /path/to/engagement
+jeb export /path/to/engagement --collection graph --output /path/to/graph.ndjson
+jeb viz --project-dir /path/to/engagement --mode graph --out /path/to/site-map.html
 ```
 
-Export requires an unused destination. Visualization supports `graph` and
-`embedding` modes without provider requests. Omitted import analysis settings
+(`jeb` here is `~/.config/opencode/skills/jeb-import/jeb`.) Export requires an unused
+destination. Visualization supports `graph` and `embedding` modes without provider
+requests. `status`, `export`, `abandon` and `viz` still work when a saved selection no
+longer validates, so a stale project can always be inspected. Omitted import analysis settings
 inherit; `--auth-cookies`, auth-cookie detection switches, and `--rebuild` retain
 their previous behavior. `abandon <capture-id> [project]` excludes interrupted
 captures without deleting evidence; rebuild afterward.

@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from urllib.error import HTTPError, URLError
@@ -22,7 +23,7 @@ def main():
     executable = shutil.which('opencode')
     if not executable:
         raise SystemExit('OpenCode V2 is required.')
-    with tempfile.TemporaryDirectory(prefix='jeb-skills-host-', dir='/tmp/opencode') as directory:
+    with tempfile.TemporaryDirectory(prefix='jeb-skills-host-') as directory:
         base = Path(directory)
         project = base / 'project'
         project.mkdir()
@@ -94,6 +95,8 @@ def main():
                 assert any(a['id'] == 'J.E.B.E.D.I.A.H.' and a['mode'] in ('primary', 'all') for a in agents), 'Agent not discovered.'
                 plugins = api('/api/plugin')
                 assert not any(p.get('id') == 'jebediah' for p in plugins), 'Unexpected Jebediah plugin.'
+                # The installed scripts import their siblings, as under the launcher.
+                sys.path.insert(0, str(config / 'skills/jeb-import/scripts'))
                 spec = importlib.util.spec_from_file_location('host_runtime', config / 'skills/jeb-import/scripts/runtime.py')
                 runtime = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(runtime)

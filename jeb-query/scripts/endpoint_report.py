@@ -194,8 +194,7 @@ def truncate_raw(document, budget, meta):
     text = f"--- REQUEST ---\n{req_text}\n\n--- RESPONSE ---\n{resp_text}"
     dropped = req_dropped + resp_dropped
     if dropped:
-        text += (f"\n\n... [truncated {dropped} of {total} chars "
-                 f"-- full document: {hints.query('get', target=meta.get('_id', '<id>'))}]")
+        text += f"\n\n... [truncated {dropped} of {total} chars -- use get on exchange_id for the full exchange]"
     return {'text': text, 'truncated': bool(dropped or req_headers or resp_headers),
             'body_chars_omitted': dropped, 'header_lines_omitted': req_headers + resp_headers,
             'chars_shown': len(text), 'chars_total': total,
@@ -296,7 +295,7 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
     hosts = sorted({m['origin'] for m in matches})
     if len(hosts) > 1:
         notes.append(f"{len(hosts)} origins serve this path: {', '.join(hosts)}. "
-                     f"Pass host= to narrow.")
+                     f"Pass --host to narrow.")
 
     if budget['page_content']:
         docs = agent.get_many([m['id'] for m in matches], include=('documents',))
@@ -353,8 +352,7 @@ def build_report(agent, raw_target, host=None, method=None, depth='normal',
             if raw_budget:
                 report['raw_example'] = _raw_example(agent, metas, raw_budget)
         elif example_ids:
-            notes.append("This route's behaviors are missing from the graph; "
-                         "run process_burp.sh rebuild <project_dir>.")
+            notes.append(hints.rebuild_note("This route's behaviors are missing from the graph."))
 
     report['notes'] = notes
     report['next'] = _next_steps(report, target)
@@ -380,6 +378,7 @@ def _example_view(doc_id, meta):
         'req_schema_keys': _csv_list(meta.get('req_schema_keys')),
         'graphql_operation': meta.get('graphql_operation', ''),
         'resp_class': meta.get('resp_class', ''),
+        'redirect_location': meta.get('redirect_location', ''),
         'resp_content_type': meta.get('resp_content_type', ''),
         'resp_body_sha256': meta.get('resp_body_sha256', ''),
         'cookie_issues': _csv_list(meta.get('cookie_issues')),
