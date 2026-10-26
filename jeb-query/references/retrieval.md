@@ -51,7 +51,8 @@ default cutoff.
 | `--anon` / `--auth` | no recognized credential / credential present | graph |
 | `--anon-matches-auth`, `--cors-open`, `--cookie-issues`, `--jwt` | boolean facets | graph |
 | `--vuln-class`, `--verdict`, `--severity` | finding fields | attacks |
-| `--host`, `--path` | exact host; path, or a full URL, matched by origin and template | all |
+| `--host` | exact host | `map`, `search`, `similar`, `attacks`, `endpoint` |
+| `--path` | path, or a full URL, matched by origin and template | `map`, `search`, `similar`, `attacks` (`endpoint` takes the path as its target) |
 
 - Collection-incompatible facets are rejected with an error.
 - Static assets are excluded unless `--include-static` is given.
@@ -66,7 +67,7 @@ default cutoff.
   filters only (no query words):
 
   ```bash
-  jeb search --in exchanges --host app.example --contains "SQLSyntaxError"
+  jeb search --project-dir DIR --in exchanges --host app.example --contains "SQLSyntaxError"
   ```
 
   This skips failed and abandoned captures.

@@ -166,7 +166,7 @@ def writer_lock(db_path, shared=False):
         try:
             fcntl.flock(handle, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise ValueError('Another J.E.B. writer is active for this project.') from exc
+            raise ValueError('Another JEB writer is active for this project.') from exc
         try:
             yield
         finally:

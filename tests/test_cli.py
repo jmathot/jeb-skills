@@ -190,9 +190,6 @@ Content-Type: application/json\r
         error = json.loads(bad.stdout)
         self.assertEqual(error['command'], 'map')
         self.assertIn('nonsense', error['error'])
-        # Compatibility aliases still reach the launchers.
-        self.assertIn('captures', json.loads(self.run_cli(self.imports / 'process_burp.sh', 'status', project).stdout))
-        self.assertTrue(json.loads(self.run_cli(self.queries / 'jeb-query.sh', 'map', '--project-dir', project).stdout)['count'])
         # A saved selection this version cannot validate blocks embedding, not inspection.
         import chromadb
         client = chromadb.PersistentClient(path=str(project / 'chroma_db'))

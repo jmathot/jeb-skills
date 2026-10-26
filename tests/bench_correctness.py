@@ -243,6 +243,7 @@ def check_error_paths(report):
     cases = [
         (['search', '--in', 'exchanges', 'free text'], 'exact filters'),
         (['search', '--in', 'graph', '--node-type', 'nonsense'], 'invalid choice'),
+        (['get', 'definitely-not-a-real-id'], 'ID not found'),
         (['search', '--in', 'graph', '--severity', 'high'], 'not supported'),
         (['map', '--limit', '0'], 'must be positive'),
         (['map', '--offset', '-1'], 'nonnegative'),

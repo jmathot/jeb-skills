@@ -2,15 +2,15 @@
 
 Tests must not install into the user's normal OpenCode configuration, change its
 credentials, restart its service, or access real engagement databases. Use isolated
-temporary directories (prefer `/tmp/opencode` for manual host checks).
+temporary directories; the automated tests create and remove their own.
 
 ## Offline checks
 
 ```bash
 jeb-import/jeb setup --viz
 bash tests/run.sh --tier u
-python3 tests/offline_correctness.py
-python3 tests/host_smoke.py
+jeb-import/scripts/venv/bin/python tests/offline_correctness.py
+jeb-import/scripts/venv/bin/python tests/host_smoke.py
 ```
 
 No Node/npm build or plugin is required. Tier U runs pure graph/parser checks,
@@ -18,16 +18,15 @@ mocked embedding contracts, standalone configuration/provider resolution, instal
 regressions, and isolated CLI workflows. All embedding HTTP transports are mocked.
 The offline launcher sets its network guard in process, not through environment
 variables. Select an already-prepared interpreter with
-`bash tests/run.sh --python /path/to/python --tier u`. Legacy JEB test and embedding
-environment settings are ignored.
+`bash tests/run.sh --python /path/to/python --tier u`.
 
-Use the prepared environment's Python for the two direct Python commands above.
 The offline correctness runner uses fake vectors for fact/CLI checks, not
 retrieval-quality measurements or live baseline updates. The host smoke starts
 its own OpenCode server, checks skill/agent discovery without a plugin, and
-resolves a dummy provider through the unmodified production resolver using
-`--opencode-server`. The test's temporary server password is supplied only through
-the standard OpenCode CLI authentication context; no JEB configuration envvars are set.
+checks that the host loaded the agent's permissions, and resolves a dummy provider
+through the unmodified production resolver using `--opencode-server`. The temporary
+server password is supplied only through the standard OpenCode CLI authentication
+context.
 
 ## Live automated testing: explicit Qwen-only opt-in
 
@@ -55,19 +54,24 @@ and embedding profile to avoid paying for unchanged imports. `--fresh` and basel
 updates are deliberate additional costs. Never invent results if a provider is
 unavailable. The gateway must pin weights and disable cross-model fallback.
 
-Historical files directly under `tests/baseline/` are Gemma measurements from the
-plugin branch, not Qwen thresholds. Qwen retrieval has a separate baseline under
-`tests/baseline/qwen3-embedding-8b-4096/`. Qwen digest/performance baselines were
-pending on the source branch. Do not claim they have been established by this port.
-Gemma's 0.38 cutoff is not applicable to Qwen/Gemini.
+`tests/baseline/embeddinggemma2-768/` holds historical Gemma measurements from the
+plugin branch, for reference only; no test reads them, and they are not Qwen
+thresholds. Qwen retrieval has its own baseline under
+`tests/baseline/qwen3-embedding-8b-4096/`.
+
+**Pending for this release:** the Qwen digest and performance baselines have not
+been recorded, so a live tier C run reports "no committed digest baseline" until
+someone runs it once with `--update-baseline`. There is no calibrated Qwen or Gemini
+distance cutoff (Gemma's 0.38 does not apply), and Ollama and Gemini have mocked
+coverage only.
 
 ## Isolated OpenCode host smoke
 
-`python3 tests/host_smoke.py` automates discovery and dummy provider-settings
+`tests/host_smoke.py` automates discovery and dummy provider-settings
 resolution without any embedding requests. The following broader checks remain
 manual, with explicitly authorized test captures/connections:
 
-In a disposable HOME/XDG/config/data directory under `/tmp/opencode`:
+In a disposable HOME/XDG/config/data directory:
 
 1. Install the skills with `OPENCODE_CONFIG_DIR` pointing to the isolated config.
 2. Start a private foreground OpenCode server using the supported V2 CLI. Never
@@ -89,7 +93,7 @@ permissions apply, including any writes/network actions of an allowed script.
 
 ## Manual backend checks
 
-- **Ollama:** manually prepare `embeddinggemma-2:latest`, verify `/api/embed`, 768d,
+- **Ollama:** pull `embeddinggemma-2:latest`, verify `/api/embed`, 768d,
   `truncate: false`, and the expected document/query prefixes. Old Gemma differs.
 - **Gemini:** verify LiteLLM routing, 3072d output, no `task_type`, and one indexed
   vector per input; Vertex batch aggregation requires separate verification.

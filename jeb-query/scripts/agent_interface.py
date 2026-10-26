@@ -1,4 +1,4 @@
-"""J.E.B. Chroma-only query interface: semantic discovery and exact evidence lookup."""
+"""JEB Chroma-only query interface: semantic discovery and exact evidence lookup."""
 if __name__ == '__main__':
     import sys
     from pathlib import Path
@@ -568,7 +568,7 @@ def execute(args):
 
 
 def build_parser():
-    parser = runtime.JsonArgumentParser(prog='jeb', description='J.E.B. Chroma-only capture investigation')
+    parser = runtime.JsonArgumentParser(prog='jeb', description='JEB Chroma-only capture investigation')
     sub = parser.add_subparsers(dest='command', required=True)
     for command in COMMANDS:
         p = sub.add_parser(command, allow_abbrev=False)

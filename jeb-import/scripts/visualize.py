@@ -1,5 +1,5 @@
 """
-J.E.B. v4 — visualizer (standalone).
+JEB — visualizer (standalone).
 
 Two modes against a project's ChromaDB:
 
@@ -277,7 +277,7 @@ def build_scatter(coords, ids, metas, color_by, size_by, reducer):
             customdata=[ids[i] for i in idx],
             hovertemplate='%{text}<br><i>%{customdata}</i><extra></extra>'))
     fig.update_layout(
-        title=f"J.E.B. vector space — {reducer.upper()} (color: {color_by}, size: {size_by})",
+        title=f"JEB vector space — {reducer.upper()} (color: {color_by}, size: {size_by})",
         legend_title=color_by, height=720, template='plotly_white',
         xaxis_title=f"{reducer}-1", yaxis_title=f"{reducer}-2")
     return fig
@@ -379,7 +379,7 @@ def stats_header(ids, embs, metas, near_dup, total_count=None):
     count_text = f"{len(ids)} vectors"
     if total_count is not None and total_count != len(ids):
         count_text = f"displaying {len(ids)} sampled vectors from {total_count} total"
-    parts = [f"<h2>J.E.B. embedding space — {count_text}</h2>",
+    parts = [f"<h2>JEB embedding space — {count_text}</h2>",
              "<p>collections: " + ", ".join(
                  f"{html_escape(k)}={v}" for k, v in collections.items()) + "</p>",
              "<p>record types: " + ", ".join(
@@ -412,7 +412,7 @@ def run_embedding_mode(args):
 
     title = args.label or os.path.basename(os.path.abspath(args.db_path))
     body = [
-        f"<html><head><meta charset='utf-8'><title>J.E.B. vector space — "
+        f"<html><head><meta charset='utf-8'><title>JEB vector space — "
         f"{html_escape(title)}</title>",
         "<style>body{font-family:system-ui,Arial,sans-serif;margin:24px;color:#222}"
         "table{font-size:13px} h2,h3{margin:12px 0}</style></head><body>",
@@ -691,7 +691,7 @@ def build_graph_figure(route_nodes, entity_nodes, pos, hierarchy_edges, entity_e
     if show_attacks:
         subtitle += "; ring: worst recorded attack verdict"
     fig.update_layout(
-        title=f"J.E.B. site map — {subtitle}",
+        title=f"JEB site map — {subtitle}",
         height=820, template='plotly_white', showlegend=True,
         xaxis=dict(visible=False), yaxis=dict(visible=False, autorange='reversed'))
     return fig
@@ -701,7 +701,7 @@ def graph_stats_header(route_nodes, entity_nodes, attacks, show_attacks):
     kind_counts = Counter(m.get('node_kind', '') for m in route_nodes.values())
     hosts = sorted({m['host'] for m in route_nodes.values() if m.get('host')})
     parts = [
-        "<h2>J.E.B. site map</h2>",
+        "<h2>JEB site map</h2>",
         f"<p>hosts: {html_escape(', '.join(hosts) or '(none)')}</p>",
         "<p>" + ", ".join(f"{html_escape(k)}={v}" for k, v in sorted(kind_counts.items())) +
         f", entity={len(entity_nodes)}</p>",
@@ -731,7 +731,7 @@ def run_graph_mode(args):
 
     title = args.label or os.path.basename(os.path.abspath(args.db_path))
     body = [
-        f"<html><head><meta charset='utf-8'><title>J.E.B. site map — "
+        f"<html><head><meta charset='utf-8'><title>JEB site map — "
         f"{html_escape(title)}</title>",
         "<style>body{font-family:system-ui,Arial,sans-serif;margin:24px;color:#222}"
         "table{font-size:13px} h2,h3{margin:12px 0}</style></head><body>",

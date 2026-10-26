@@ -4,7 +4,7 @@ The capture is *authored*, so every expected fact is known without running the
 engine under test. Routes, response/request body shapes, and anonymous-access
 outcomes are declared below; the manifest is derived from those declarations.
 
-Single origin by design: a J.E.B. project tracks ONE engagement, ONE host.
+Single origin by design: a JEB project tracks ONE engagement, ONE host.
 
     python3 tests/make_capture.py [--out-dir tests]
 

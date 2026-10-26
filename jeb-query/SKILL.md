@@ -3,28 +3,28 @@ name: jeb-query
 description: Investigate an imported Burp capture. Look up endpoints, map the app, inspect HTTP/auth/CORS behavior, traverse the knowledge graph, correlate identifiers, and record or recall findings from a project-local Chroma database. Use jeb-import first for new Burp XML.
 ---
 
-# J.E.B. — query
+# JEB — query
 
 Every command goes through this skill's launcher: `<skill-dir>/jeb`, which is
-`~/.config/opencode/skills/jeb-query/jeb` in a default install.
+`~/.config/opencode/skills/jeb-query/jeb` in a default install. **Below, `jeb` means
+that full path**; there is no `jeb` on PATH.
 
 ```bash
-~/.config/opencode/skills/jeb-query/jeb endpoint https://app.example/api/orders/42
+~/.config/opencode/skills/jeb-query/jeb endpoint https://app.example/api/orders/42 --project-dir DIR
 ```
 
-- Run from the engagement project, or pass `--project-dir DIR` (or `--db-path DB`, not
-  both), before or after the command.
+- Always pass `--project-dir DIR` (the engagement directory), or `--db-path DB`, not both.
 - Embedding settings and credentials come from the project and OpenCode; nothing else
   needs configuring.
 - Every command prints one JSON object with `command`, `count`, `results` and `next`.
-  Errors are JSON with `error` and a nonzero exit; a failed query is not evidence of
-  absence.
+  Errors are JSON with `error` (usage errors add `help`), exit 2 for bad usage and 1
+  for a failed query. A failed query is not evidence of absence.
 
 ## Commands
 
 | Need | Command | Useful flags |
 |---|---|---|
-| Everything about one route | `endpoint <path-or-url>` | `--host`, `--method`, `--no-raw`, `--raw-chars N` |
+| Everything about one route | `jeb endpoint <path-or-url>` | `--host`, `--method`, `--no-raw`, `--raw-chars N` |
 | Site structure | `map --node-type route` (or `origin`, `data_object`) | `--kind page\|action\|endpoint`, `--host`, `--limit`, `--offset` |
 | Semantic search | `search "password reset form" --node-type behavior` | `--loose`, `--depth quick\|normal\|deep` |
 | Filter observed records | `search --status '>=500' --param q` | filters below |
@@ -74,7 +74,7 @@ project selection you passed. Prefer them over composing a new query. Fill any
 ## Findings
 
 ```bash
-jeb record-attack --vuln-class SQLi --endpoint https://app.example/api/search \
+jeb record-attack --project-dir DIR --vuln-class SQLi --endpoint https://app.example/api/search \
   --method GET --param q --payload "'" --status 500 --verdict inconclusive \
   --source-id <behavior-id> --evidence "Database error in response" \
   --request-file req.txt --response-file resp.txt --event-id <retry-key>

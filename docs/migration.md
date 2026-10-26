@@ -33,10 +33,22 @@ Prompt scheme and cosine distance are derived/fixed, not environment overrides.
 Only explicitly supplied non-secret endpoint/server URL overrides are stored;
 provider-resolved URLs and credentials remain private to the execution.
 
-Each skill now has one launcher at its root (`<skill-dir>/jeb`). The older
-`process_burp.sh`, `jeb-query.sh`, `setup.sh` and `visualize.sh` scripts remain as
-compatibility aliases for it. There are no npm/build
-requirements, plugin entrypoints, native `jeb_*` tools, or plugin registrations.
+Each skill now has one launcher at its root (`<skill-dir>/jeb`). The older scripts
+were removed; reinstalling removes them from an existing installation too. Replace
+them as follows:
+
+| Removed | Use instead |
+|---|---|
+| `jeb-import/scripts/setup.sh [--viz]` | `jeb-import/jeb setup [--viz]` |
+| `jeb-import/scripts/process_burp.sh <command> ...` | `jeb-import/jeb <command> ...` |
+| `jeb-import/scripts/visualize.sh ...` | `jeb-import/jeb viz ...` |
+| `jeb-query/scripts/jeb-query.sh <command> ...` | `jeb-query/jeb <command> ...` |
+
+The arguments are unchanged, except that a bare capture path (`jeb capture.xml DIR`)
+is treated as `import` only when it ends in `.xml` or names an existing file; any
+other unknown word is an error. `status`, `export`, `abandon` and `viz` now print
+JSON instead of plain text. There are no npm/build requirements, plugin entrypoints,
+native `jeb_*` tools, or plugin registrations.
 
 Plugin permission hooks cannot be reproduced by Markdown skills. Normal shell
 permissions apply; operators must authorize remote capture processing. Public
@@ -51,7 +63,7 @@ launcher. OAuth/external credentials are never repurposed as embedding API keys.
 3. Run `~/.config/opencode/skills/jeb-import/jeb setup` (`--viz` for plots); models are
    prepared separately.
 4. From the intended OpenCode configuration scope, run
-   `~/.config/opencode/skills/jeb-import/jeb rebuild /path/to/project` with the desired
+   `~/.config/opencode/skills/jeb-import/jeb rebuild --project-dir /path/to/project` with the desired
    embedding switches from the README.
 5. Check `status`, investigate an endpoint, and confirm retained finding IDs/evidence.
 
@@ -63,17 +75,19 @@ retains state for retry. No installed plugin or unrelated configuration is remov
 ## Verification recorded for this port
 
 - Offline graph/parser pure checks passed.
-- **38** offline contract/installer/setup/CLI tests passed with mocked HTTP, including
-  regression checks that stale JEB environment values cannot affect execution.
+- **50** offline contract/installer/setup/CLI/docs tests passed with mocked HTTP
+  (2026-10-25, release 8.0.0), including regression checks that stale JEB environment
+  values cannot affect execution, launcher error envelopes, and installer
+  uninstall/prune.
 - Installed CLI workflows covered API-key resolution, no secret output, exact
   lookups with an unavailable provider, cross-model rebuilds, unavailable-provider
   recovery, finding preservation, export, and both visualization modes.
 - An actual database generated with the historical `dbc5163` code was rebuilt:
   source observation ID/document/capture membership and finding ID/evidence survived.
-- **155/155** synthetic ground-truth fact/CLI checks passed with fake embeddings.
+- **154/154** synthetic ground-truth fact/CLI checks passed with fake embeddings.
   This is not a live retrieval-quality result.
-- A private real OpenCode V2 server discovered both skills and the primary agent,
-  with no Jebediah plugin. The real CLI resolved a dummy provider's settings/key.
+- A private real OpenCode V2 (v2.1.4) server discovered both skills and the primary
+  agent, with its permissions loaded and no Jebediah plugin. The real CLI resolved a dummy provider's settings/key.
   The current smoke uses the unmodified production resolver with an explicit
   server selection, not a patched subprocess implementation.
 - Shell syntax and `git diff --check` passed.

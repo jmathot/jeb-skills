@@ -1,18 +1,14 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
 
-# Virtual environment (created per-install inside the skill scripts dir)
+# Environment created by `jeb setup` inside the skill scripts dir
 venv/
-jeb-import/scripts/venv/
-
-# Pipeline output / project data
-chroma_db/
-parsed_*.json
-annotated_*.json
-structure_*.json
-behavior_*.json
-vector_space*.html
 .venv/
 .venv.lock
-*.egg-info/
+
+# Project data and visualizer output, if run from the checkout
+chroma_db/
+vector_space*.html
+site_map*.html

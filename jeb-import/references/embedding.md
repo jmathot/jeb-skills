@@ -13,11 +13,12 @@ collection, and later imports and queries inherit them.
 | `litellm-gemini-embedding-2` | 3072 | 8192 |
 | `litellm-qwen3-embedding-8b` | 4096 | 32768 |
 
-Without switches, new projects use local Ollama. Prepare `embeddinggemma-2:latest`
-yourself; the older `embeddinggemma` is a different model. Setup never downloads a model.
+Without switches, new projects use local Ollama. The user must pull
+`embeddinggemma-2:latest` (`ollama pull embeddinggemma-2`); the older `embeddinggemma`
+is a different model. Setup never downloads a model.
 
 ```bash
-<skill-dir>/jeb import capture.xml /path/to/project \
+<skill-dir>/jeb import capture.xml --project-dir /path/to/project \
   --embedding-provider litellm \
   --embedding-preset litellm-qwen3-embedding-8b \
   --embedding-model qwen/qwen3-embedding-8b \
@@ -69,3 +70,22 @@ the database. A failed import does not save its switches.
 
 The Gemma-2 distance cutoff is calibrated only for that model. Qwen and Gemini default
 to no cutoff.
+
+## Serving requirements
+
+| Preset | Formatting | Supported dimensions |
+|---|---|---|
+| `ollama-embeddinggemma2` | Titled documents; `task: search result` queries | 128, 256, 512, 768 |
+| `litellm-gemini-embedding-2` | Same prefixes; no `task_type` parameter | 128–3072 |
+| `litellm-qwen3-embedding-8b` | English `Instruct:` / `Query:` for queries only | 32–4096 |
+
+Dimensions are also subject to what the endpoint supports. Omitting the dimension
+parameter does not relax exact output validation. Qwen serving must use last-token
+pooling and must not add a second query instruction. Gemini must return one vector
+per input, not an aggregate.
+
+The engine checks response cardinality and index order, finite nonzero exact-sized
+vectors, L2 normalization, and conservative UTF-8 input budgets including prefixes.
+There is no silent truncation, dimension slicing, redirect credential forwarding, or
+model fallback. Models cannot be mixed even when their dimensions match, and JEB
+cannot detect a weight replacement behind an unchanged alias.

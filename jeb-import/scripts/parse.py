@@ -1,10 +1,10 @@
 """
-J.E.B. v2 — Phase 1: parse a Burp Suite XML export into normalised items.
+JEB — Phase 1: parse a Burp Suite XML export into normalised items.
 
 Differences from the v1 `ingest.py`:
   * No web-code corpus retention (client-side code analysis was dropped).
   * Headers are retained *broadly* (only pure browser-hint noise is stripped),
-    because headers are never embedded in v2 — they live in the retrieval
+    because headers are never embedded — they live in the retrieval
     document and power `--where-document` substring filtering. Fidelity here is
     what makes cookie/header attack analysis possible.
   * No dedup at this stage: every item is kept, even exact repeats of the same
@@ -369,7 +369,7 @@ def iter_items(xml_file):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 1: parse Burp XML")
+    ap = argparse.ArgumentParser(description="JEB Phase 1: parse Burp XML")
     ap.add_argument('xml_file')
     ap.add_argument('-o', '--output', required=True, help='explicit export destination')
     args = ap.parse_args()

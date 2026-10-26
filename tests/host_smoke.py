@@ -92,7 +92,12 @@ def main():
                     if skill['id'] in ('jeb-import', 'jeb-query'):
                         assert str(config) in skill['path'], 'Unexpected skill source.'
                 agents = api('/api/agent')
-                assert any(a['id'] == 'J.E.B.E.D.I.A.H.' and a['mode'] in ('primary', 'all') for a in agents), 'Agent not discovered.'
+                agent = next((a for a in agents if a['id'] == 'J.E.B.E.D.I.A.H.' and a['mode'] in ('primary', 'all')), None)
+                assert agent, 'Agent not discovered.'
+                rules = [(r['action'], r['resource'], r['effect']) for r in agent.get('permissions', [])]
+                # The host merges its defaults with the agent's own rules.
+                assert ('edit', '*', 'ask') in rules and ('shell', '*', 'allow') in rules, rules
+                assert agent['request']['body'].get('temperature') == 0.1, 'Agent request settings not loaded.'
                 plugins = api('/api/plugin')
                 assert not any(p.get('id') == 'jebediah' for p in plugins), 'Unexpected Jebediah plugin.'
                 # The installed scripts import their siblings, as under the launcher.

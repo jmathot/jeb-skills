@@ -26,16 +26,18 @@ Two skills, each with one launcher. Load a skill before first use.
   skill loads from somewhere else. The commands are `endpoint`, `map`, `search`, `get`,
   `similar`, `identifier`, `evidence`, `graph`, `attacks` and `record-attack`.
 - **`jeb-import`**: building and maintaining the database, through
-  `~/.config/opencode/skills/jeb-import/jeb` (`import`, `rebuild`, `status`, `abandon`,
-  `export`, `viz`). Preserve the database and the original exports across rebuilds.
+  `~/.config/opencode/skills/jeb-import/jeb` (`setup`, `import`, `rebuild`, `status`,
+  `abandon`, `export`, `viz`). Preserve the database and the original exports across
+  rebuilds.
 
-Run from the engagement project directory, or add `--project-dir <dir>`. Every
-response is JSON with a `next` list of ready-to-run follow-up commands, most with real
-ids filled in. Prefer those over composing your own, because they reflect what the
-tool actually found. Fill any `<placeholder>` before running one.
+Always add `--project-dir <engagement dir>`; the examples below leave it out for
+brevity. Every response is JSON with a `next` list of ready-to-run follow-up commands,
+most with real ids filled in. Prefer those over composing your own, because they
+reflect what the tool actually found. Fill any `<placeholder>` before running one.
 
-Before the first import or query that would send capture content to a remote
-embedding gateway, confirm the user intends that.
+If the project uses a remote embedding gateway, imports, searches and recorded
+findings all send text to it. Before the first such command, confirm the user intends
+that.
 
 ## Scope
 
@@ -164,16 +166,12 @@ attacker gets, not a generic label.
 
 ## Interpreting observations carefully
 
-- Credential presence is not successful authentication. `credential_present` and
-  `auth_state` are explicit; legacy `authenticated` fields are credential-presence
-  aliases. `--anon` means no recognized credential.
-- Public anonymous data is not automatically an authorization bug.
-- `anon_matches_auth` compares full response hashes at the same URL and request
-  body against credential-bearing traffic; it does not confirm the credentials
-  were accepted. The schema-match flag is weaker. Neither proves authorization
-  failure.
-- CORS `matches-origin` records one equality observation, not arbitrary
-  reflection. Equal identifier values are leads, not proof of shared records.
+Apply the jeb-query skill's "Interpret carefully" rules to every result. In addition:
+
+- `credential_present` and `auth_state` are explicit; legacy `authenticated` fields
+  are credential-presence aliases, not proof that a login succeeded.
+- `anon_matches_auth` compares full response hashes at the same URL and request body;
+  neither it nor the weaker schema match proves an authorization failure.
 - Lower `distance` is closer, not a confidence or vulnerability probability.
 - Check `incomplete_captures`, `index_state`, errors, and pagination before
   interpreting empty or partial results. Never delete the database to repair a

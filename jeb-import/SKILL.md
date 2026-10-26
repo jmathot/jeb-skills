@@ -3,12 +3,12 @@ name: jeb-import
 description: Import Burp Suite XML into a project's cumulative Chroma knowledge graph; choose the embedding backend; rebuild, check status, abandon failed captures, export, and visualize. Use for ingestion and maintenance; use jeb-query to investigate.
 ---
 
-# J.E.B. — import and maintenance
+# JEB — import and maintenance
 
 Every command goes through this skill's launcher: `<skill-dir>/jeb`, which is
-`~/.config/opencode/skills/jeb-import/jeb` in a default install. It needs no PATH or
-environment changes. Run it from the engagement project, or pass `--project-dir DIR`
-(before or after the command). The skill directory is source code, not engagement data.
+`~/.config/opencode/skills/jeb-import/jeb` in a default install. **Below, `jeb` means
+that full path**; there is no `jeb` on PATH. Always pass `--project-dir DIR` (the
+engagement directory). The skill directory is source code, not engagement data.
 
 ## Setup (once)
 
@@ -23,12 +23,12 @@ calls a model.
 
 | Need | Command |
 |---|---|
-| Import a capture | `jeb import capture.xml [--project-dir DIR]` |
-| Re-derive indexes (no XML needed) | `jeb rebuild` |
-| Inspect parse/index state and the loss ledger | `jeb status` |
-| Exclude a failed/interrupted capture | `jeb abandon <capture_id>`, then `jeb rebuild` |
-| Export a collection as NDJSON | `jeb export --collection graph --output FILE` |
-| Site map / vector-space HTML | `jeb viz --mode graph --out FILE` (or `--mode embedding`) |
+| Import a capture | `jeb import capture.xml --project-dir DIR` |
+| Re-derive indexes (no XML needed) | `jeb rebuild --project-dir DIR` |
+| Inspect parse/index state and the loss ledger | `jeb status --project-dir DIR` |
+| Exclude a failed/interrupted capture | `jeb abandon <capture_id> --project-dir DIR`, then `rebuild` |
+| Export a collection as NDJSON | `jeb export --project-dir DIR --collection graph --output FILE` |
+| Site map / vector-space HTML | `jeb viz --project-dir DIR --mode graph --out FILE` (or `--mode embedding`) |
 
 Imports are cumulative: each new capture adds to the project, and every exchange
 is retained with its capture provenance (duplicates are merged only in the
@@ -36,8 +36,9 @@ derived indexes). Analysis flags (on `import`/`rebuild`) persist for the project
 - `--auth-cookies NAME[,NAME...]` sets the custom session cookie names; `''` clears them.
 - `--no-auto-detect-auth-cookies` turns off login-cookie inference.
 
-Output is JSON, or plain progress lines for `import`/`rebuild`. Errors are JSON
-`{"command", "error"}` with a nonzero exit.
+Every command prints JSON; `import` and `rebuild` print progress lines first. Errors
+are one JSON object `{"command", "error"}` (usage errors add `help`), with exit 2
+for bad usage and 1 for a failed command. `jeb <command> -h` lists all options.
 
 ## Embedding backend
 

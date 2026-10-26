@@ -219,6 +219,11 @@ def uninstall(config, dry_run=False):
             for folder in sorted((p for p in root.rglob('*') if p.is_dir()), reverse=True) + [root]:
                 if not any(folder.iterdir()):
                     folder.rmdir()
+    # Shared with other skills and agents: removed only if nothing else is there.
+    for shared in ('skills', 'agents'):
+        folder = config / shared
+        if folder.is_dir() and not folder.is_symlink() and not any(folder.iterdir()):
+            folder.rmdir()
     print(f'Uninstalled jeb-import, jeb-query and the primary agent from {config}')
     for backup in change.backups:
         print(f'Kept locally edited file as: {backup}')

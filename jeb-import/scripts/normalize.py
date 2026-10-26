@@ -1,5 +1,5 @@
 """
-J.E.B. v2 — Phase 2: normalise + annotate parsed items.
+JEB — Phase 2: normalise + annotate parsed items.
 
 Runs the corpus-level passes that need to see the whole capture at once, then
 annotates every item with the value-suppressed features the builders consume:
@@ -402,7 +402,7 @@ def annotate(items, auth_cookies=(), auto_detect=True):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="J.E.B. v2 Phase 2: normalise + annotate")
+    ap = argparse.ArgumentParser(description="JEB Phase 2: normalise + annotate")
     ap.add_argument('input_file', nargs='?', default='parsed_traffic.json')
     ap.add_argument('-o', '--output', required=True, help='explicit export destination')
     ap.add_argument('--auth-cookies', action='append', default=[],

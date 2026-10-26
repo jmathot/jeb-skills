@@ -1,5 +1,5 @@
 """
-J.E.B. -- the `endpoint` command: everything known about one route, in one call.
+JEB -- the `endpoint` command: everything known about one route, in one call.
 
 This is the answer to "investigate /api/orders". It is a deterministic index
 scan, not a vector search: `JebAgent.parent_index()` returns every structural

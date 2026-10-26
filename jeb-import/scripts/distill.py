@@ -1,5 +1,5 @@
 """
-J.E.B. v2 shared distillation library.
+JEB shared distillation library.
 
 Pure functions (no I/O) used by the ingestion pipeline to turn raw HTTP into:
   * canonical endpoint templates (site-structure keys),
